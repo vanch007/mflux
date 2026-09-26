@@ -36,3 +36,9 @@ build/
 .claude
 CLAUDE.md
 .gitnexus
+
+# Local evaluation outputs and debug artifacts
+debug_artifacts/
+outputs/
+.ai_project.md
+.ai_memory.md
