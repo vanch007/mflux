@@ -29,23 +29,29 @@ class LinearScheduler(BaseScheduler):
         sigmas = mx.array(sigmas).astype(mx.float32)
         sigmas = mx.concatenate([sigmas, mx.zeros(1)])
         if model_config.requires_sigma_shift:
-            m = (model_config.sigma_max_shift - model_config.sigma_base_shift) / (
-                model_config.sigma_max_seq_len - model_config.sigma_base_seq_len
-            )
-            b = model_config.sigma_base_shift - m * model_config.sigma_base_seq_len
-            mu = m * self.config.width * self.config.height / 256 + b
-            mu = mx.array(mu)
-
-            shifted = mx.exp(mu) / (mx.exp(mu) + (1 / sigmas[:-1] - 1))
-
-            if model_config.sigma_shift_terminal is not None:
-                one_minus = 1.0 - shifted
-                scale = one_minus[-1] / (1.0 - model_config.sigma_shift_terminal)
-                shifted = 1.0 - (one_minus / scale)
-
-            return mx.concatenate([shifted, mx.zeros(1)])
+            return LinearScheduler.shift_sigmas(sigmas[:-1], self.config)
         else:
             return sigmas
+
+    @staticmethod
+    def shift_sigmas(sigmas: mx.array, config: "Config", *, use_terminal: bool = True) -> mx.array:
+        model_config = config.model_config
+        m = (model_config.sigma_max_shift - model_config.sigma_base_shift) / (
+            model_config.sigma_max_seq_len - model_config.sigma_base_seq_len
+        )
+        b = model_config.sigma_base_shift - m * model_config.sigma_base_seq_len
+        mu = m * config.width * config.height / 256 + b
+        mu = mx.array(mu)
+
+        shifted = mx.exp(mu) / (mx.exp(mu) + (1 / sigmas - 1))
+
+        terminal = model_config.sigma_shift_terminal if use_terminal else None
+        if terminal is not None:
+            one_minus = 1.0 - shifted
+            scale = one_minus[-1] / (1.0 - terminal)
+            shifted = 1.0 - (one_minus / scale)
+
+        return mx.concatenate([shifted, mx.zeros(1)])
 
     def _get_timesteps(self) -> mx.array:
         num_steps = self.config.num_inference_steps

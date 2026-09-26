@@ -6,6 +6,7 @@ __all__ = [
     "LinearScheduler",
     "FlowMatchEulerDiscreteScheduler",
     "SeedVR2EulerScheduler",
+    "register_contrib",
 ]
 
 
