@@ -12,6 +12,7 @@ from mflux.models.common.config import ModelConfig
 from mflux.models.common.config.config import Config
 from mflux.models.common.vae.vae_util import VAEUtil
 from mflux.models.common.weights.saving.model_saver import ModelSaver
+from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
 from mflux.models.qwen21.reference.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
 from mflux.models.qwen21.reference.model.qwen_image21_text_encoder.prompt_encoder import QwenImage21PromptEncoder
 from mflux.models.qwen21.reference.model.qwen_image21_transformer.layout import QwenImage21Layout
@@ -25,16 +26,25 @@ from mflux.utils.image_util import ImageUtil
 
 class QwenImage21Edit(nn.Module):
     def __init__(
-        self, quantize: int | None = None, model_path: str | None = None, model_config: ModelConfig | None = None
+        self,
+        quantize: int | None = None,
+        model_path: str | None = None,
+        model_config: ModelConfig | None = None,
+        lora_paths: list[str] | None = None,
+        lora_scales: list[float] | None = None,
+        lora_preset: str | None = None,
+        bake_lora: bool = False,
     ):
         super().__init__()
-        QwenImage21Initializer.init(self, model_config or ModelConfig.qwen_image_21(), quantize, model_path)
+        config = Qwen21LoRA.configure(model_config or ModelConfig.qwen_image_21(), lora_preset)
+        QwenImage21Initializer.init(self, config, quantize, model_path)
+        Qwen21LoRA.apply(self, lora_paths, lora_scales, lora_preset, bake_lora, reference=True)
 
     def generate_image(
         self,
         seed: int,
         prompt: str,
-        num_inference_steps: int = MODEL_INFERENCE_STEPS["qwen-image-2.1"],
+        num_inference_steps: int | None = None,
         height: int | None = None,
         width: int | None = None,
         guidance: float = 1.0,
@@ -42,11 +52,23 @@ class QwenImage21Edit(nn.Module):
         image_paths: list[str | Path] | None = None,
         output_resolution: int = 1024,
         use_kv_cache: bool = True,
+        scheduler: str | None = None,
+        independent_edit_noise: bool = True,
+        reference_resolution: int = 1024,
     ) -> GeneratedImage:
+        if num_inference_steps is None:
+            num_inference_steps = (
+                Qwen21LoRA.DEFAULT_STEPS if self.lora_preset else MODEL_INFERENCE_STEPS["qwen-image-2.1"]
+            )
+        Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
+        scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
+        if scheduler not in ("linear", "viggle_turbo"):
+            raise ValueError("Qwen-Image-2.1 editing supports linear or viggle_turbo Euler sampling only.")
         image_paths = image_paths or []
         if len(image_paths) > 10:
             raise ValueError("Qwen-Image-2.1 supports at most 10 reference images.")
         QwenImage21LatentCreator.validate_resolution(output_resolution)
+        QwenImage21LatentCreator.validate_resolution(reference_resolution)
         images = [open_oriented(path).convert("RGBA") for path in image_paths]
         ratio = images[-1].width / images[-1].height if images else 1.0
         default_width, default_height = QwenImage21LatentCreator.dimensions(output_resolution, ratio)
@@ -63,10 +85,11 @@ class QwenImage21Edit(nn.Module):
             width=width,
             height=height,
             guidance=guidance,
+            scheduler=scheduler,
         )
         images = [
             image.resize(
-                QwenImage21LatentCreator.dimensions(output_resolution, image.width / image.height),
+                QwenImage21LatentCreator.dimensions(reference_resolution, image.width / image.height),
                 Image.Resampling.LANCZOS,
             )
             for image in images
@@ -76,7 +99,7 @@ class QwenImage21Edit(nn.Module):
             if not size["shortest_edge"] <= image.width * image.height <= size["longest_edge"]:
                 raise ValueError(
                     "Reference image area falls outside the vision processor's range; "
-                    "adjust output_resolution (the default is 1024)."
+                    "adjust reference_resolution (the default is 1024)."
                 )
         prompt_embeds, slots = self._encode_prompt(prompt, images)
         negative = self._encode_prompt(negative_prompt, images) if guidance > 1 else None
@@ -91,7 +114,8 @@ class QwenImage21Edit(nn.Module):
                 QwenImage21LatentCreator.pack_latents(self.vae.encode(pixels)).astype(prompt_embeds.dtype)
             )
         condition_latents = mx.concatenate(conditions, axis=1) if conditions else None
-        mx.random.seed(seed)
+        noise_seed = QwenImage21LatentCreator.edit_noise_seed(seed, images) if independent_edit_noise else seed
+        mx.random.seed(noise_seed)
         latents = mx.random.normal((1, 64, 1, height // 16, width // 16)).astype(prompt_embeds.dtype)
         latents = QwenImage21LatentCreator.pack_latents(latents)
         cache = [] if use_kv_cache else None
@@ -132,10 +156,22 @@ class QwenImage21Edit(nn.Module):
             generation_time=config.time_steps.format_dict["elapsed"],
             image_paths=image_paths,
             negative_prompt=negative_prompt,
-            generation_parameters={"use_kv_cache": use_kv_cache, "output_resolution": output_resolution},
+            lora_paths=self.lora_paths,
+            lora_scales=self.lora_scales,
+            generation_parameters={
+                "use_kv_cache": use_kv_cache,
+                "output_resolution": output_resolution,
+                "reference_resolution": reference_resolution,
+                "lora_preset": self.lora_preset,
+                "bake_lora": self.bake_lora,
+                "independent_edit_noise": independent_edit_noise,
+                "noise_seed": noise_seed,
+            },
         )
 
     def save_model(self, base_path: str) -> None:
+        if self.lora_paths:
+            raise ValueError("Save the base model without LoRA, then reload its adapters separately.")
         ModelSaver.save_model(self, self.bits, base_path, QwenImage21WeightDefinition)
         destination = Path(base_path)
         for name, config in self._component_configs.items():

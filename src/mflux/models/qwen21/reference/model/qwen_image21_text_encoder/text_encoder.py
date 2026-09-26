@@ -29,7 +29,10 @@ class LanguageModel(nn.Module):
         params = {
             key: value for key, value in config.items() if key in inspect.signature(Qwen3VLDecoderLayer).parameters
         }
-        params["mrope_section"] = config["rope_scaling"]["mrope_section"]
+        rope_config = config.get("rope_scaling") or config.get("rope_parameters", {})
+        params["mrope_section"] = rope_config["mrope_section"]
+        if "rope_theta" not in params and "rope_theta" in rope_config:
+            params["rope_theta"] = rope_config["rope_theta"]
         self.layers = [Qwen3VLDecoderLayer(**params) for _ in range(config["num_hidden_layers"])]
         for layer in self.layers:
             layer.input_layernorm = TextRMSNorm(config["hidden_size"], config["rms_norm_eps"])
@@ -37,7 +40,7 @@ class LanguageModel(nn.Module):
             layer.self_attn.q_norm = TextRMSNorm(config["head_dim"], config["rms_norm_eps"])
             layer.self_attn.k_norm = TextRMSNorm(config["head_dim"], config["rms_norm_eps"])
         self.rotary_emb = Qwen3VLRotaryEmbedding(
-            dim=config["head_dim"], base=config["rope_theta"], mrope_section=params["mrope_section"]
+            dim=config["head_dim"], base=config.get("rope_theta", rope_config.get("rope_theta", 5000000)), mrope_section=params["mrope_section"]
         )
 
     def __call__(

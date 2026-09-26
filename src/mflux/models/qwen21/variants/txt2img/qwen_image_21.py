@@ -14,6 +14,7 @@ from mflux.models.qwen21.model.qwen21_text_encoder.qwen21_text_encoder import Qw
 from mflux.models.qwen21.model.qwen21_transformer.qwen21_transformer import Qwen21Transformer
 from mflux.models.qwen21.model.qwen21_vae.qwen21_vae import Qwen21VAE
 from mflux.models.qwen21.qwen21_initializer import Qwen21Initializer
+from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
 from mflux.models.qwen21.weights.qwen21_weight_definition import Qwen21WeightDefinition
 from mflux.utils.exceptions import StopImageGenerationException
 from mflux.utils.generated_image import GeneratedImage
@@ -30,28 +31,41 @@ class QwenImage21(nn.Module):
         quantize: int | None = None,
         model_path: str | None = None,
         model_config: ModelConfig = ModelConfig.qwen_image_21(),
+        lora_paths: list[str] | None = None,
+        lora_scales: list[float] | None = None,
+        lora_preset: str | None = None,
+        bake_lora: bool = False,
     ):
         super().__init__()
         Qwen21Initializer.init(
             model=self,
             quantize=quantize,
             model_path=model_path,
-            model_config=model_config,
+            model_config=Qwen21LoRA.configure(model_config, lora_preset),
         )
+        Qwen21LoRA.apply(self, lora_paths, lora_scales, lora_preset, bake_lora, reference=False)
 
     def generate_image(
         self,
         seed: int,
         prompt: str,
-        num_inference_steps: int = 40,
+        num_inference_steps: int | None = None,
         height: int = 1024,
         width: int = 1024,
         guidance: float = 1.0,
         image_path: Path | str | None = None,
         image_strength: float | None = None,
-        scheduler: str = "linear",
+        scheduler: str | None = None,
         negative_prompt: str | None = None,
     ) -> GeneratedImage:
+        if num_inference_steps is None:
+            num_inference_steps = Qwen21LoRA.DEFAULT_STEPS if self.lora_preset else 40
+        Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
+        scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
+        if self.lora_preset and image_path is not None:
+            raise ValueError(
+                "Use QwenImage21Edit for Turbo reference edits; strength-based img2img skips required steps."
+            )
         config = Config(
             width=width,
             height=height,
@@ -140,9 +154,14 @@ class QwenImage21(nn.Module):
             quantization=self.bits,
             generation_time=config.time_steps.format_dict["elapsed"],
             negative_prompt=negative_prompt,
+            lora_paths=self.lora_paths,
+            lora_scales=self.lora_scales,
+            generation_parameters={"lora_preset": self.lora_preset, "bake_lora": self.bake_lora},
         )
 
     def save_model(self, base_path: str) -> None:
+        if self.lora_paths:
+            raise ValueError("Save the base model without LoRA, then reload its adapters separately.")
         ModelSaver.save_model(
             model=self,
             bits=self.bits,

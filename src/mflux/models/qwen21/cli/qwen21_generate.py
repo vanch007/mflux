@@ -2,12 +2,14 @@ from mflux.callbacks.callback_manager import CallbackManager
 from mflux.cli.parser.parsers import CommandLineParser
 from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.qwen21.latent_creator.qwen21_latent_creator import Qwen21LatentCreator
+from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
 from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
 from mflux.utils.dimension_resolver import DimensionResolver
 from mflux.utils.exceptions import PromptFileReadError, StopImageGenerationException
 from mflux.utils.prompt_util import PromptUtil
 
 DEFAULT_MODEL = "qwen-image-2.1"
+IGNORED_OPTIONS = {"--lora-style": "Named LoRA styles apply to Flux in-context only; use --lora."}
 
 
 def build_parser() -> CommandLineParser:
@@ -17,12 +19,33 @@ def build_parser() -> CommandLineParser:
     parser.add_image_generator_arguments(supports_metadata_config=True, supports_dimension_scale_factor=True)
     parser.add_image_to_image_arguments(required=False)
     parser.add_output_arguments()
+    parser.add_lora_arguments(bake_lora_default=False)
+    parser.set_defaults(scheduler=None)
+    parser.lora_preset_default_steps = {Qwen21LoRA.PRESET: Qwen21LoRA.DEFAULT_STEPS}
+    parser._option_string_actions["--scheduler"].help = "Automatic: linear for base, viggle_turbo for Turbo."
+    parser.add_argument(
+        "--lora-preset",
+        choices=[Qwen21LoRA.PRESET],
+        help="Use the Viggle v0.2.1 runtime adapter: 6 steps by default, or 8 for dense text.",
+    )
     return parser
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    CommandLineParser.warn_ignored_options(IGNORED_OPTIONS)
+    try:
+        args.scheduler = Qwen21LoRA.resolve_scheduler(args.lora_preset, args.scheduler)
+        Qwen21LoRA.validate_generation(
+            args.lora_preset, args.steps, 1.0 if args.guidance is None else args.guidance, args.negative_prompt
+        )
+        if args.lora_preset and args.bake_lora:
+            raise ValueError("viggle-turbo requires --no-bake-lora (the Qwen 2.1 default).")
+        if args.lora_preset and args.image_path is not None:
+            raise ValueError("Use mflux-generate-qwen-2.1-edit --image-paths for Turbo reference editing.")
+    except ValueError as exc:
+        parser.error(str(exc))
 
     model_config = ConfigResolution.resolve_restricted(
         args.model,
@@ -35,6 +58,10 @@ def main():
         quantize=args.quantize,
         model_path=args.model_path,
         model_config=model_config,
+        lora_paths=args.lora_paths,
+        lora_scales=args.lora_scales,
+        lora_preset=args.lora_preset,
+        bake_lora=args.bake_lora,
     )
 
     memory_saver = CallbackManager.register_callbacks(

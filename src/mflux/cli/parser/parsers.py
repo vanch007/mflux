@@ -100,6 +100,7 @@ class CommandLineParser(argparse.ArgumentParser):
         self.require_image_paths = False
         self.require_redux_image_paths = False
         self.default_model = None
+        self.lora_preset_default_steps = {}
 
     def add_general_arguments(self) -> None:
         self.add_argument("--battery-percentage-stop-limit", "-B", type=lambda v: max(min(int(v), 99), 1), default=ui_defaults.BATTERY_PERCENTAGE_STOP_LIMIT, help=f"On Macs powered by battery, stop image generation when battery reaches this percentage. Default: {ui_defaults.BATTERY_PERCENTAGE_STOP_LIMIT}")
@@ -141,7 +142,7 @@ class CommandLineParser(argparse.ArgumentParser):
         self.add_argument("--base-model", type=str, required=False, metavar="MODEL", help="When using a third-party HuggingFace model or local path, explicitly name the built-in model it is based on (e.g. dev, schnell, qwen-image).")
         self.add_argument("--quantize",  "-q", type=int, choices=ui_defaults.QUANTIZE_CHOICES, default=None, help=f"Quantize the model ({' or '.join(map(str, ui_defaults.QUANTIZE_CHOICES))}, Default is None)")
 
-    def add_lora_arguments(self) -> None:
+    def add_lora_arguments(self, bake_lora_default: bool = True) -> None:
         self.supports_lora = True
         lora_group = self.add_argument_group("LoRA configuration")
         lora_group.add_argument("--lora-style", type=str, choices=sorted(LORA_NAME_MAP.keys()), help="Style of the LoRA to use (e.g., 'storyboard' for film storyboard style)")
@@ -151,8 +152,8 @@ class CommandLineParser(argparse.ArgumentParser):
         lora_group.add_argument(
             "--bake-lora",
             action=argparse.BooleanOptionalAction,
-            default=True,
-            help="Merge LoRA/LoKr deltas into base weights after load (default: on). Use --no-bake-lora to keep runtime adapters.",
+            default=bake_lora_default,
+            help=f"Merge LoRA/LoKr deltas into base weights after load (default: {'on' if bake_lora_default else 'off'}). Use --no-bake-lora to keep runtime adapters.",
         )
 
     def _add_image_generator_common_arguments(self, supports_dimension_scale_factor=False) -> None:
@@ -460,7 +461,7 @@ class CommandLineParser(argparse.ArgumentParser):
                 namespace.height = prior_gen_metadata.get("height") or namespace.height
             if hasattr(namespace, "width") and not self._option_was_provided("--width"):
                 namespace.width = prior_gen_metadata.get("width") or namespace.width
-            for parameter in ("use_kv_cache", "output_resolution"):
+            for parameter in ("use_kv_cache", "output_resolution", "lora_preset", "bake_lora", "scheduler"):
                 option = parameter.replace("_", "-")
                 if (
                     hasattr(namespace, parameter)
@@ -468,6 +469,16 @@ class CommandLineParser(argparse.ArgumentParser):
                     and not self._option_was_provided(f"--{option}", f"--no-{option}")
                 ):
                     setattr(namespace, parameter, prior_gen_metadata[parameter])
+
+            if hasattr(namespace, "reference_resolution") and not self._option_was_provided("--reference-resolution"):
+                # Older Qwen 2.1 sidecars used one budget for output and references.
+                namespace.reference_resolution = prior_gen_metadata.get("reference_resolution", namespace.output_resolution)
+
+            if hasattr(namespace, "independent_edit_noise") and not self._option_was_provided(
+                "--independent-edit-noise", "--no-independent-edit-noise"
+            ):
+                # Old Qwen 2.1 sidecars used the seed directly; preserve their replay.
+                namespace.independent_edit_noise = prior_gen_metadata.get("independent_edit_noise", False)
 
             # all configs from the metadata config defers to any explicitly defined args
             guidance_default = self.get_default("guidance")
@@ -612,11 +623,13 @@ class CommandLineParser(argparse.ArgumentParser):
             # alive (`--base-model flux2-klein-base-9b` with no --model runs the 50-step
             # base, not the default entry's 4), and gives a custom checkpoint with no
             # usable name the count of the entry the restricted CLIs actually run it on.
-            namespace.steps = ui_defaults.model_inference_steps(
-                getattr(namespace, "model", None),
-                getattr(namespace, "base_model", None),
-                fallback_model=self.default_model,
-            )
+            namespace.steps = self.lora_preset_default_steps.get(getattr(namespace, "lora_preset", None))
+            if namespace.steps is None:
+                namespace.steps = ui_defaults.model_inference_steps(
+                    getattr(namespace, "model", None),
+                    getattr(namespace, "base_model", None),
+                    fallback_model=self.default_model,
+                )
 
         # In-context edit: exclusivity lives in the argparse group; only the
         # "at least one" half needs a post-parse check.

@@ -14,9 +14,12 @@ class QwenImage21PromptEncoder:
         )
         rgb_images = []
         for img in images:
-            white = Image.new("RGB", img.size, "white")
-            white.paste(img, mask=img.getchannel("A"))
-            rgb_images.append(white)
+            if img.mode == "RGBA":
+                white = Image.new("RGB", img.size, "white")
+                white.paste(img, mask=img.getchannel("A"))
+                rgb_images.append(white)
+            else:
+                rgb_images.append(img.convert("RGB"))
         kwargs = {"images": rgb_images} if images else {}
         inputs = processor(text=[text], padding=True, padding_side="left", return_tensors="np", **kwargs)
         ids = mx.array(inputs["input_ids"])

@@ -1,9 +1,25 @@
+import hashlib
 import math
 
 import mlx.core as mx
+from PIL import Image
 
 
 class QwenImage21LatentCreator:
+    @staticmethod
+    def edit_noise_seed(seed: int, images: list[Image.Image]) -> int:
+        if not images:
+            return seed
+        # Reusing a generated reference's noise causes oversharpening in self-edits.
+        digest = hashlib.sha256(f"mflux-qwen21-edit-noise-v1:{seed}".encode())
+        for image in images:
+            rgba = image.convert("RGBA")
+            digest.update(rgba.width.to_bytes(4, "big"))
+            digest.update(rgba.height.to_bytes(4, "big"))
+            digest.update(rgba.tobytes())
+        mixed = int.from_bytes(digest.digest()[:4], "big")
+        return mixed if mixed != (seed & 0xFFFFFFFF) else mixed ^ 0xFFFFFFFF
+
     @staticmethod
     def pack_latents(latents: mx.array) -> mx.array:
         if latents.ndim == 5:
