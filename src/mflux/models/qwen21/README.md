@@ -2,6 +2,8 @@
 
 For instruction-based single/multiple-reference editing, prefix KV caching, and RGBA output, see [reference editing](reference/README.md) and `mflux-generate-qwen-2.1-edit`. The existing command below retains its text-to-image and strength-based img2img behavior.
 
+Reference editing automatically derives independent, reproducible noise from the seed and input pixels to prevent artifacts when reusing a generated image's seed. See [edit noise and metadata replay](reference/README.md#reproducible-edit-noise).
+
 MFLUX’s MLX implementation of **Qwen-Image-2.1** (`Qwen/Qwen-Image-2.1`), the second-generation
 Qwen Image text-to-image model.
 
@@ -94,5 +96,7 @@ Pass `--image-path` and optionally `--image-strength`, like the other models.
   dropped from the final hidden states, matching the reference pipeline exactly.
 - The text prefix KV cache (valid because `causal_condition` makes text activations
   step-independent) is a planned optimization; the current port recomputes the prefix each step.
-- Not yet supported: the edit/instruction variant (needs the Qwen3-VL vision tower), LoRA
-  mappings, and PID decoding.
+- LoRA inference and an optional six-step Viggle Turbo v0.2.1 preset (eight steps for dense text) are available on both commands;
+  see [LoRA usage and quality limits](reference/README.md#acceleration-lora-local-integration).
+- Reference editing, RGBA output and KV caching use the separate `mflux-generate-qwen-2.1-edit` command.
+- PID decoding and training are not implemented.

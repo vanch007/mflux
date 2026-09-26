@@ -4,7 +4,32 @@ Native MLX inference for [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-
 
 The new `mflux-generate-qwen-2.1-edit` entry point complements the existing `mflux-generate-qwen-2.1` text-to-image and strength-based img2img command. Both use the same model registry entry. This variant adds the vision tower and interleaved reference conditioning; its components live in `qwen21/reference` because the original text-only port uses a different checkpoint layout and drops alpha. Existing generation behavior and saved checkpoints keep their original entry point.
 
-The editing pipeline includes prefix KV caching, quantization, local checkpoint export/reload, metadata replay, and the common generation callbacks. Training and LoRA loading are not implemented for this model.
+The editing pipeline includes prefix KV caching, quantization, local checkpoint export/reload, metadata replay, LoRA inference, and the common generation callbacks. Training is not implemented for this model.
+
+## Acceleration LoRA (local integration)
+
+The optional [Viggle Turbo v0.2.1](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) preset downloads only its 680 MB rank-128 adapter (or the 1.36 GB rank-256 alternative), pinned to revision `bb26a0f38e5fe6c124aaccc9187a87eed5d9ed13`. It reuses the base model, including a locally substituted text encoder.
+
+```sh
+mflux-generate-qwen-2.1-edit \
+  --lora-preset viggle-turbo --steps 6 --guidance 1 \
+  --prompt "A red ceramic teapot on a wooden table, studio photograph" \
+  --width 1024 --height 1024 --seed 42 --metadata --output turbo.png
+```
+
+Add `--image-paths source.png` for reference editing. The same preset is available for text-to-image on `mflux-generate-qwen-2.1`; use the edit entry point for KV caching. Turbo rejects legacy strength-based img2img because it skips part of the required distilled schedule. The preset disables terminal sigma stretching and defaults to six steps, guidance 1, adapter scale 1, and runtime adapters (`--no-bake-lora`, the default for both Qwen 2.1 commands). Omit the preset for normal 40-step generation. Original base defaults are unchanged.
+
+```python
+model = QwenImage21Edit(lora_preset="viggle-turbo")
+image = model.generate_image(seed=42, prompt="A ceramic teapot", width=1024, height=1024)
+image.save("turbo.png")  # preset defaults to six steps in the Python API
+```
+
+The scheduler is selected automatically as `viggle_turbo`. Its six raw nodes are `[1, 0.9375, 0.875, 0.75, 0.5, 0.25]`; the resolution-dependent time shift is applied once. `--steps 8` selects the official dense-text nodes `[1, 0.9375, 0.875, 0.75, 0.625, 0.5, 0.25, 0.125]`. Other step counts and an explicit `linear` scheduler are rejected. Scale 1 is the official recipe; custom scales such as 0.85 are available for local comparisons. Turbo CFG above 1 remains experimental and warns because it adds a second pass and can reduce quality. To choose r256, add `--lora Viggle/Qwen-Image-2.1-viggle-turbo:Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors 1.0`. Both adapters remain unquantized and unmerged by default.
+
+For other compatible 2.1 adapters, use the shared `--lora PATH SCALE` option or the Python `lora_paths` / `lora_scales` arguments. Diffusers, PEFT, and common ComfyUI/Kohya naming conventions are mapped; unsupported keys, incomplete pairs, and incompatible dimensions are rejected before any adapter is applied. Legacy Qwen Image 20B adapters are incompatible. Nontrivial PEFT alpha/rank patterns, rsLoRA, and DoRA are not supported. Save base checkpoints without adapters and load adapters separately; exporting a LoRA-loaded model is intentionally rejected to prevent accidental baking or loss of the Turbo scheduler.
+
+This is a lossy distillation preset, not a quality-preserving replacement. Its author reports weaker complex edits and rendered text; training used at most three references; RGBA/mask behavior has limited validation. Local tests must be assessed separately, especially when using a substituted text encoder or low resolutions.
 
 ## Generate an image
 
@@ -55,11 +80,19 @@ mflux-generate-qwen-2.1-edit \
   --output combined.png
 ```
 
-The editing examples use the 512-pixel reference budget exercised by the local single- and two-reference visual checks. See [validation results](VALIDATION.md) for the larger-size samples and their limitations.
+The examples request a 512-pixel output area budget, with reference encoding independently kept at the default 1024². For historical reference-budget tests, pass `--reference-resolution 512` explicitly. See [validation results](VALIDATION.md) for historical samples and their limitations.
 
-Reference order is significant. If width and height are omitted, the last reference image determines the output aspect ratio. `--output-resolution` defaults to 1024 and sets the pixel-area budget used to resize each reference and derive automatic output dimensions. `--width` and `--height` control output dimensions independently of that reference budget. Reference images must remain within the checkpoint processor's pixel-area range after resizing; the default budget handles ordinary aspect ratios.
+Reference order is significant. If width and height are omitted, the last reference image determines the output aspect ratio. `--output-resolution` defaults to 1024 and derives automatic output dimensions. `--reference-resolution` independently defaults to 1024, matching Viggle training even for 1536² output. `--width` and `--height` override output dimensions without changing reference encoding. Older metadata without `reference_resolution` replays its original shared budget; override `--reference-resolution 1024` to apply the new behavior. Reference images must remain within the checkpoint processor's pixel-area range after resizing; the default budget handles ordinary aspect ratios.
 
 RGBA references retain alpha in the VAE. The vision encoder reads a separate copy composited over white, matching the upstream pipeline.
+
+### Reproducible edit noise
+
+Editing a generated image with its original seed and output dimensions can reuse the exact noise that created it. A local controlled test reproduced severe background texture and oversharpening in both MLX and Diffusers; changing only the edit seed removed the artifact.
+
+The edit entry point now enables `--independent-edit-noise` by default: it derives the noise seed from the requested seed and the resized RGBA reference pixels, including their dimensions and order. The same seed and references remain reproducible; text-only generation keeps its existing noise. This applies to both the base model and Turbo adapters, including WebUI calls, without additional denoising steps.
+
+Python exposes `independent_edit_noise=True`. Use `--no-independent-edit-noise` only for legacy reproduction or controlled reference comparisons. Metadata records `seed`, `noise_seed`, and `independent_edit_noise`. New sidecars restore the policy; older sidecars without the field replay the original direct-seed behavior. Add `--independent-edit-noise` explicitly when applying the fix to an old sidecar.
 
 ## Transparent output
 
@@ -98,7 +131,7 @@ mflux-generate-qwen-2.1-edit \
   --output replay.png
 ```
 
-Use `--no-use-kv-cache` to recompute the prefix each step. Keep this setting fixed when comparing samples: cached and uncached execution can produce different images in reduced precision. Metadata records the cache flag and reference resolution budget, and explicit CLI values override restored metadata. MLX and PyTorch use different random-number generators, so matching seeds alone does not imply matching images.
+Use `--no-use-kv-cache` to recompute the prefix each step. Keep this setting fixed when comparing samples: cached and uncached execution can produce different images in reduced precision. Metadata records the cache flag and both resolution budgets, and explicit CLI values override restored metadata. MLX and PyTorch use different random-number generators, so matching seeds alone does not imply matching images.
 
 Optional classifier-free guidance uses `--guidance` greater than 1 and `--negative-prompt`. The trained default is 1.0. See the [common CLI documentation](../../common/README.md) for prompt files, seeds, step previews, and other shared flags.
 
@@ -137,4 +170,4 @@ MFLUX_PRESERVE_TEST_OUTPUT=1 uv run \
   python -m pytest tests/image_generation/test_qwen_image21_parity.py
 ```
 
-Real checkpoint tests have produced 1024-pixel text-to-image and transparent PNG outputs, 512-pixel single- and two-reference edits, a successful 896×1152 two-reference clothing edit using the official ComfyUI workflow inputs, and pixel-identical output after 8-bit checkpoint export/reload. A 2048-pixel run passed a four-step execution check. The original 1024×1024 panda edits missed the requested changes in both MLX and the controlled Diffusers reference run; expanding the prompts did not resolve those samples. See [VALIDATION.md](VALIDATION.md) for exact settings, numerical differences, and limitations.
+Real checkpoint tests have produced 1024-pixel text-to-image and transparent PNG outputs, 512-pixel single- and two-reference edits, a successful 896×1152 two-reference clothing edit using the official ComfyUI workflow inputs, and pixel-identical output after 8-bit checkpoint export/reload. An older 2048-pixel four-step run was an execution check, not a current Turbo preset recommendation. The original 1024×1024 panda edits missed the requested changes in both MLX and the controlled Diffusers reference run; expanding the prompts did not resolve those samples. See [VALIDATION.md](VALIDATION.md) for exact settings, numerical differences, and limitations.
