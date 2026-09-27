@@ -66,22 +66,26 @@ class Qwen21LoRA:
             raise ValueError("viggle-turbo requires its adapter; remove the preset to disable LoRA.")
         if preset and paths is None:
             paths = [hf_hub_download(Qwen21LoRA.REPO, Qwen21LoRA.FILENAME, revision=Qwen21LoRA.REVISION)]
-        elif preset and paths:
-            paths = [
-                hf_hub_download(Qwen21LoRA.REPO, path.split(":", 1)[1], revision=Qwen21LoRA.REVISION)
-                if path in [f"{Qwen21LoRA.REPO}:{name}" for name in Qwen21LoRA.SUPPORTED_FILENAMES]
-                else path
-                for path in paths
-            ]
+        elif paths:
+            resolved = []
+            for path in paths:
+                if preset and path in [f"{Qwen21LoRA.REPO}:{name}" for name in Qwen21LoRA.SUPPORTED_FILENAMES]:
+                    resolved.append(hf_hub_download(Qwen21LoRA.REPO, path.split(":", 1)[1], revision=Qwen21LoRA.REVISION))
+                elif ":" in path and not path.startswith("http") and not Path(path).exists():
+                    r_repo, r_file = path.split(":", 1)
+                    resolved.append(hf_hub_download(r_repo, r_file))
+                else:
+                    resolved.append(path)
+            paths = resolved
         paths = LoraResolution.resolve_paths(paths)
         if not preset and any(Path(path).name in Qwen21LoRA.SUPPORTED_FILENAMES for path in paths):
             raise ValueError("Load this adapter with --lora-preset viggle-turbo so its required scheduler is enabled.")
         scales = LoraResolution.resolve_scales(scales, len(paths))
         if any(not math.isfinite(scale) for scale in scales):
             raise ValueError("LoRA scales must be finite.")
-        if preset and (len(paths) != 1 or not any(Path(paths[0]).name == f for f in Qwen21LoRA.SUPPORTED_FILENAMES)):
+        if preset and not any(Path(p).name in Qwen21LoRA.SUPPORTED_FILENAMES for p in paths):
             allowed = ", ".join(Qwen21LoRA.SUPPORTED_FILENAMES)
-            raise ValueError(f"viggle-turbo requires one of the official v0.2.1 adapters: {allowed}")
+            raise ValueError(f"viggle-turbo requires at least one of the official v0.2.1 adapters: {allowed}")
         mapping = Qwen21LoRAMapping.get_mapping(reference=reference)
         for path in paths:
             Qwen21LoRA._validate(model.transformer, path, mapping)
