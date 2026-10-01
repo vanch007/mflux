@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import LocalEntryNotFoundError
 
 from mflux.cli.defaults.defaults import MFLUX_LORA_CACHE_DIR
@@ -135,6 +135,13 @@ class LoraResolution:
     def _find_collection_file(repo_id: str, filename: str, *, local_files_only: bool) -> str | None:
         cache_path = MFLUX_LORA_CACHE_DIR
         cache_path.mkdir(parents=True, exist_ok=True)
+
+        # Reuse files downloaded by the Python API in the standard HF cache.
+        # This lookup is offline even when the later download path is enabled.
+        try:
+            return hf_hub_download(repo_id=repo_id, filename=filename, local_files_only=True)
+        except LocalEntryNotFoundError:
+            pass
 
         linked = LoraResolution._linked_collection_path(filename)
         if linked is not None:

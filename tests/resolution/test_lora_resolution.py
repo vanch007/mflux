@@ -321,3 +321,25 @@ class TestLoraResolutionRelativePaths:
         result = LoraResolution.resolve(path="./subdir/style.safetensors")
 
         assert "style.safetensors" in result
+
+
+def test_collection_reuses_standard_hf_cache(monkeypatch, tmp_path):
+    from mflux.models.common.resolution.lora_resolution import LoraResolution
+
+    path = tmp_path / "turbo8.safetensors"
+    path.write_bytes(b"cached")
+    calls = []
+
+    def cached(**kwargs):
+        calls.append(kwargs)
+        return str(path)
+
+    monkeypatch.setattr("mflux.models.common.resolution.lora_resolution.hf_hub_download", cached)
+
+    def unexpected_download(**kwargs):
+        raise AssertionError("Must not download or duplicate cached weights")
+
+    monkeypatch.setattr("mflux.models.common.resolution.lora_resolution.snapshot_download", unexpected_download)
+    result = LoraResolution.resolve("test/turbo8:turbo8.safetensors")
+    assert result == str(path)
+    assert all(c["local_files_only"] is True for c in calls)
