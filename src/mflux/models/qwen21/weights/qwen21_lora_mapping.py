@@ -34,7 +34,7 @@ class Qwen21LoRAMapping(LoRAMapping):
             kohya = f"lora_unet_{path.replace('.', '_')}"
             targets.append(
                 LoRATarget(
-                    model_path="modulation.layers.1" if path == "modulation.1" and not reference else path,
+                    model_path="modulation.layers.1" if path == "modulation.1" else path,
                     possible_up_patterns=[
                         f"{alias}.{suffix}"
                         for alias in aliases

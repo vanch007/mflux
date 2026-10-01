@@ -35,6 +35,14 @@ class LinearScheduler(BaseScheduler):
 
     @staticmethod
     def shift_sigmas(sigmas: mx.array, config: "Config", *, use_terminal: bool = True) -> mx.array:
+        """Apply the resolution-dependent flow time shift to RAW sigma nodes.
+
+        Shared by LinearScheduler's linspace schedule and fixed-node schedules
+        (e.g. the viggle_turbo distilled LoRA, whose shipped nodes are raw and
+        must be shifted exactly like the default nodes). use_terminal=False drops
+        the sigma_shift_terminal rescale: the turbo model card requires the plain
+        shift (the base config's terminal rescale wrecks its final step).
+        """
         model_config = config.model_config
         m = (model_config.sigma_max_shift - model_config.sigma_base_shift) / (
             model_config.sigma_max_seq_len - model_config.sigma_base_seq_len

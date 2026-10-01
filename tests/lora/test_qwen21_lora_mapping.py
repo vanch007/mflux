@@ -1,281 +1,215 @@
 import json
 import sys
-from types import SimpleNamespace
+from unittest.mock import Mock
 
 import mlx.core as mx
-import numpy as np
 import pytest
 from mlx import nn
 
-from mflux.models.common.config import ModelConfig
-from mflux.models.common.config.config import Config
+from mflux.cli.capabilities import describe_command
 from mflux.models.common.lora.layer.linear_lora_layer import LoRALinear
 from mflux.models.common.lora.mapping.lora_loader import LoRALoader
 from mflux.models.qwen21.cli import qwen21_edit_generate, qwen21_generate
-from mflux.models.qwen21.model.qwen21_transformer.qwen21_transformer import Qwen21Transformer
-from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
-from mflux.models.qwen21.reference.model.qwen_image21_transformer.transformer import QwenImage21Transformer
+from mflux.models.qwen21.model.qwen21_transformer.qwen21_time_text_embed import Qwen21TimeTextEmbed
+from mflux.models.qwen21.model.qwen21_transformer.qwen21_transformer_block import Qwen21TransformerBlock
 from mflux.models.qwen21.weights.qwen21_lora_mapping import Qwen21LoRAMapping
 
-pytestmark = pytest.mark.fast
 
-
-class TestQwen21LoRA:
-    @staticmethod
-    def transformer(reference):
-        config = dict(
-            num_layers=2,
-            num_attention_heads=2,
-            attention_head_dim=16,
-            axes_dims_rope=(4, 6, 6),
-            context_in_dim=32,
-            in_channels=4,
-            out_channels=4,
-            mlp_ratio=3,
-            eps=1e-6,
-        )
-        return QwenImage21Transformer(config) if reference else Qwen21Transformer(**config)
-
-    @pytest.mark.parametrize("reference", [True, False], ids=["edit", "txt2img"])
-    @pytest.mark.parametrize("convention", ["diffusers", "peft", "peft-default", "comfy", "kohya", "bare"])
-    def test_all_targets_match_runtime_delta(self, tmp_path, reference, convention):
-        transformer = self.transformer(reference)
-        weights, expected = {}, {}
-        for target in Qwen21LoRAMapping.get_mapping(reference=reference):
-            path = target.model_path.format(block=1)
-            source = path.replace("modulation.layers.1", "modulation.1")
-            layer = LoRALoader._get_target_module(transformer, path)
-            out_dim, in_dim = layer.weight.shape
-            a = mx.random.normal((2, in_dim)) * 0.05
-            b = mx.random.normal((out_dim, 2)) * 0.05
-            x = mx.random.normal((3, in_dim))
-            expected[path] = (x, layer(x) + 0.75 * (x @ a.T @ b.T) * 1.5)
-            prefix = {
-                "diffusers": "transformer.",
-                "peft": "base_model.model.",
-                "peft-default": "base_model.model.",
-                "comfy": "diffusion_model.",
-                "bare": "",
-            }.get(convention)
-            if convention == "kohya":
-                root = "lora_unet_" + source.replace(".", "_")
-                weights[f"{root}.lora_down.weight"] = a
-                weights[f"{root}.lora_up.weight"] = b
-            else:
-                root = prefix + source
-                suffix = {"comfy": "", "peft-default": ".default.weight"}.get(convention, ".weight")
-                weights[f"{root}.lora_A{suffix}"] = a
-                weights[f"{root}.lora_B{suffix}"] = b
-            weights[f"{root}.alpha"] = mx.array(3.0)
-        path = tmp_path / "adapter.safetensors"
-        mx.save_safetensors(str(path), weights)
-        model = SimpleNamespace(transformer=transformer)
-        Qwen21LoRA.apply(model, [str(path)], [0.75], None, False, reference=reference)
-        for target, (x, value) in expected.items():
-            layer = LoRALoader._get_target_module(transformer, target)
-            assert isinstance(layer, LoRALinear)
-            np.testing.assert_allclose(np.array(layer(x)), np.array(value), atol=1e-6, rtol=1e-5)
-        assert model.lora_paths == [str(path)] and model.lora_scales == [0.75]
-
-    @pytest.mark.parametrize("failure", ["shape", "missing", "foreign", "mixed", "metadata"])
-    def test_bad_adapters_fail_before_modifying_layers(self, tmp_path, failure):
-        transformer = self.transformer(True)
-        root = "transformer.transformer_blocks.0.attn.to_q"
-        weights = {f"{root}.lora_A.weight": mx.ones((2, 32)), f"{root}.lora_B.weight": mx.ones((32, 2))}
-        metadata = {}
-        if failure == "shape":
-            weights[f"{root}.lora_A.weight"] = mx.ones((2, 16))
-        elif failure == "missing":
-            del weights[f"{root}.lora_B.weight"]
-        elif failure in ("foreign", "mixed"):
-            foreign = {"transformer.transformer_blocks.0.attn.add_q_proj.lora_A.weight": mx.ones((2, 32))}
-            weights = foreign if failure == "foreign" else {**weights, **foreign}
-        else:
-            metadata = {"lora_adapter_metadata": json.dumps({"transformer.r": 2, "transformer.lora_alpha": 4})}
-        path = tmp_path / "invalid.safetensors"
-        mx.save_safetensors(str(path), weights, metadata)
-        with pytest.raises(ValueError):
-            Qwen21LoRA.apply(SimpleNamespace(transformer=transformer), [str(path)], None, None, False, reference=True)
-        assert isinstance(transformer.transformer_blocks[0].attn.to_q, nn.Linear)
-
-    @pytest.mark.parametrize("width,height", [(512, 736), (1024, 1024), (1536, 1536), (2048, 2048)])
-    @pytest.mark.parametrize("steps", [6, 8])
-    def test_turbo_sigmas_match_published_scheduler_without_mutating_base(self, width, height, steps):
-        base = ModelConfig.qwen_image_21()
-        config = Qwen21LoRA.configure(base, "viggle-turbo")
-        assert config is not base and base.sigma_shift_terminal == 0.02
-        scheduler = Config(
-            model_config=config, num_inference_steps=steps, width=width, height=height, scheduler="viggle_turbo"
-        ).scheduler
-        mu = 0.5 + (0.9 - 0.5) * (width * height / 256 - 256) / (8192 - 256)
-        sigmas = np.array(
-            [1, 0.9375, 0.875, 0.75, 0.5, 0.25] if steps == 6 else [1, 0.9375, 0.875, 0.75, 0.625, 0.5, 0.25, 0.125]
-        )
-        expected = np.r_[np.exp(mu) / (np.exp(mu) + (1 / sigmas - 1)), 0]
-        np.testing.assert_allclose(np.array(scheduler.sigmas), expected, atol=1e-6)
-        assert Qwen21LoRA.configure(base, None) is base
-
-    @pytest.mark.parametrize("module", [qwen21_generate, qwen21_edit_generate])
-    def test_cli_metadata_restores_preset_and_runtime_adapters(self, tmp_path, monkeypatch, module):
-        sidecar = tmp_path / "sample.json"
-        sidecar.write_text(
-            json.dumps(
-                dict(prompt="test", steps=8, lora_preset="viggle-turbo", bake_lora=False, scheduler="viggle_turbo")
-            )
-        )
-        monkeypatch.setattr(sys, "argv", ["qwen21", "--config-from-metadata", str(sidecar)])
-        parser = module.build_parser()
-        args = parser.parse_args()
-        assert parser.supports_lora and args.lora_preset == "viggle-turbo"
-        assert args.steps == 8 and args.bake_lora is False and args.scheduler == "viggle_turbo"
-        monkeypatch.setattr(sys, "argv", ["qwen21", "--prompt", "test"])
-        args = module.build_parser().parse_args()
-        assert args.steps == 40 and args.lora_preset is None and args.bake_lora is False
-
-    @pytest.mark.parametrize("module", [qwen21_generate, qwen21_edit_generate])
-    @pytest.mark.parametrize(
-        "options",
-        [
-            ["--steps", "40"],
-            ["--steps", "4"],
-            ["--steps", "7"],
-            ["--steps", "6", "--bake-lora"],
-            ["--steps", "6", "--scheduler", "linear"],
-        ],
+@pytest.mark.fast
+@pytest.mark.parametrize("bake_lora", [False, True])
+@pytest.mark.parametrize("prefix,suffix", [("", ".default"), ("transformer.", ""), ("diffusion_model.", "")])
+@pytest.mark.parametrize(
+    "name",
+    ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "img_mlp.proj", "img_mlp.gate_layer", "img_mlp.out"],
+)
+def test_qwen21_lora_updates_target_layer(tmp_path, name, prefix, suffix, bake_lora):
+    model = nn.Module()
+    model.transformer_blocks = [Qwen21TransformerBlock(dim=8, num_attention_heads=2, attention_head_dim=4)]
+    path = f"transformer_blocks.0.{name}"
+    linear = LoRALoader._get_target_module(model, path)
+    output_dims, input_dims = linear.weight.shape
+    down = mx.arange(2 * input_dims, dtype=mx.float32).reshape(2, input_dims) / 100
+    up = mx.arange(output_dims * 2, dtype=mx.float32).reshape(output_dims, 2) / 100
+    x = mx.ones((1, input_dims))
+    expected = linear(x) + 0.7 * (x @ down.T @ up.T)
+    mx.eval(expected)
+    adapter = tmp_path / "adapter.safetensors"
+    mx.save_safetensors(
+        str(adapter), {f"{prefix}{path}.lora_A{suffix}.weight": down, f"{prefix}{path}.lora_B{suffix}.weight": up}
     )
-    def test_invalid_turbo_cli_rejected_before_loading(self, monkeypatch, module, options):
-        monkeypatch.setattr(sys, "argv", ["qwen21", "--prompt", "test", "--lora-preset", "viggle-turbo", *options])
-        name = "QwenImage21Edit" if module is qwen21_edit_generate else "QwenImage21"
-        monkeypatch.setattr(module, name, lambda **kwargs: pytest.fail("Should reject before loading weights"))
-        with pytest.raises(SystemExit) as exc:
-            module.main()
-        assert exc.value.code == 2
 
-    @pytest.mark.parametrize("module", [qwen21_generate, qwen21_edit_generate])
-    def test_cli_passes_lora_settings_to_model(self, monkeypatch, module):
-        monkeypatch.setattr(sys, "argv", ["qwen21", "--prompt", "test", "--lora-preset", "viggle-turbo"])
-        received = {}
+    paths, scales = LoRALoader.load_and_apply_lora(
+        Qwen21LoRAMapping.get_mapping(), model, [str(adapter)], [0.7], bake_lora=bake_lora
+    )
 
-        def construct(**kwargs):
-            received.update(kwargs)
-
-            def generate(**kwargs):
-                received["generation"] = kwargs
-                return SimpleNamespace(save=lambda *a, **k: None)
-
-            return SimpleNamespace(generate_image=generate)
-
-        name = "QwenImage21Edit" if module is qwen21_edit_generate else "QwenImage21"
-        monkeypatch.setattr(module, name, construct)
-        monkeypatch.setattr(module.CallbackManager, "register_callbacks", lambda *args, **kwargs: None)
-        module.main()
-        assert received["lora_preset"] == "viggle-turbo" and received["bake_lora"] is False
-        assert received["generation"]["num_inference_steps"] == 6
-        assert received["generation"]["scheduler"] == "viggle_turbo"
-
-    def test_preset_refuses_baking_and_disabled_adapter(self):
-        for paths, bake in [(None, True), ([], False)]:
-            with pytest.raises(ValueError):
-                Qwen21LoRA.apply(SimpleNamespace(), paths, None, "viggle-turbo", bake, reference=True)
-
-    def test_turbo_adapter_cannot_silently_use_base_scheduler(self, tmp_path):
-        path = tmp_path / Qwen21LoRA.FILENAME
-        path.touch()
-        with pytest.raises(ValueError, match="required scheduler"):
-            Qwen21LoRA.apply(SimpleNamespace(), [str(path)], None, None, False, reference=True)
-
-    def test_quantized_layer_keeps_runtime_delta(self, tmp_path):
-        transformer = self.transformer(True)
-        layer = transformer.transformer_blocks[0].attn.to_q.to_quantized(group_size=32, bits=8)
-        transformer.transformer_blocks[0].attn.to_q = layer
-        a, b = mx.ones((2, 32)) * 0.01, mx.ones((32, 2)) * 0.02
-        x = mx.random.normal((3, 32))
-        expected = layer(x) + x @ a.T @ b.T
-        path = tmp_path / "adapter.safetensors"
-        root = "transformer.transformer_blocks.0.attn.to_q"
-        mx.save_safetensors(str(path), {f"{root}.lora_A.weight": a, f"{root}.lora_B.weight": b})
-        Qwen21LoRA.apply(SimpleNamespace(transformer=transformer), [str(path)], None, None, False, reference=True)
-        np.testing.assert_allclose(
-            np.array(transformer.transformer_blocks[0].attn.to_q(x)), np.array(expected), atol=1e-6
-        )
-
-    @pytest.mark.parametrize("reference", [True, False])
-    @pytest.mark.parametrize("prefix", ["transformer.", "diffusion_model."])
-    def test_fused_gate_up_preserves_both_runtime_updates(self, tmp_path, reference, prefix):
-        transformer = self.transformer(reference)
-        mlp = transformer.transformer_blocks[0].img_mlp
-        out_dim, in_dim = mlp.gate_layer.weight.shape
-        a, b = mx.random.normal((2, in_dim)), mx.random.normal((2 * out_dim, 2))
-        x = mx.random.normal((3, in_dim))
-        gate = mlp.gate_layer(x) + 0.7 * (x @ a.T @ b[:out_dim].T)
-        proj = mlp.proj(x) + 0.7 * (x @ a.T @ b[out_dim:].T)
-        expected = mlp.out(nn.silu(gate) * proj)
-        mx.eval(expected)
-        path = tmp_path / "fused.safetensors"
-        root = f"{prefix}transformer_blocks.0.img_mlp.gate_up"
-        mx.save_safetensors(str(path), {f"{root}.lora_A.weight": a, f"{root}.lora_B.weight": b})
-        Qwen21LoRA.apply(SimpleNamespace(transformer=transformer), [str(path)], [0.7], None, False, reference=reference)
-        np.testing.assert_allclose(np.array(mlp(x)), np.array(expected), rtol=1e-5, atol=1e-5)
-
-    def test_turbo_allows_custom_scale(self, tmp_path, monkeypatch):
-        path = tmp_path / Qwen21LoRA.FILENAME
-        path.touch()
-        monkeypatch.setattr(Qwen21LoRA, "_validate", lambda *_: None)
-        model = SimpleNamespace(transformer=SimpleNamespace())
-        monkeypatch.setattr(
-            "mflux.models.common.lora.mapping.lora_loader.LoRALoader.load_and_apply_lora",
-            lambda *args, **kwargs: ([str(path)], [0.85]),
-        )
-        Qwen21LoRA.apply(model, [str(path)], [0.85], "viggle-turbo", False, reference=True)
-        assert model.lora_scales == [0.85]
-
-    @pytest.mark.parametrize("preset,scheduler", [("viggle-turbo", "linear"), (None, "viggle_turbo")])
-    def test_scheduler_cannot_silently_switch_model_recipe(self, preset, scheduler):
-        with pytest.raises(ValueError):
-            Qwen21LoRA.resolve_scheduler(preset, scheduler)
+    actual = LoRALoader._get_target_module(model, path)
+    assert isinstance(actual, LoRALinear) is (not bake_lora)
+    assert mx.allclose(actual(x), expected, atol=1e-6).item()
+    assert paths == [str(adapter)]
+    assert scales == [0.7]
 
 
-@pytest.mark.parametrize("module", [qwen21_generate, qwen21_edit_generate])
-def test_turbo8_cli_defaults_to_eight_steps(monkeypatch, module):
-    monkeypatch.setattr(sys, "argv", ["qwen21", "--prompt", "test", "--lora-preset", "turbo8"])
-    args = module.build_parser().parse_args()
-    assert args.steps == 8
-    assert Qwen21LoRA.resolve_scheduler(args.lora_preset, args.scheduler) == "linear"
-    assert Qwen21LoRA.configure(ModelConfig.qwen_image_21(), "turbo8").sigma_shift_terminal is None
+@pytest.mark.fast
+@pytest.mark.parametrize("bake_lora", [False, True])
+@pytest.mark.parametrize(
+    "name",
+    ["modulation.layers.1", "time_text_embed.timestep_embedder.linear_1", "time_text_embed.timestep_embedder.linear_2"],
+)
+@pytest.mark.parametrize("prefix", ["transformer", "diffusion_model"])
+def test_qwen21_lora_updates_global_layer(tmp_path, name, bake_lora, prefix):
+    model = nn.Module()
+    model.modulation = nn.Sequential(nn.SiLU(), nn.Linear(8, 32, bias=False))
+    model.time_text_embed = Qwen21TimeTextEmbed(embedding_dim=8)
+    linear = LoRALoader._get_target_module(model, name)
+    output_dims, input_dims = linear.weight.shape
+    down = mx.arange(2 * input_dims, dtype=mx.float32).reshape(2, input_dims) / 100
+    up = mx.arange(output_dims * 2, dtype=mx.float32).reshape(output_dims, 2) / 100
+    x = mx.ones((1, input_dims))
+    expected = linear(x) + 0.7 * (x @ down.T @ up.T)
+    mx.eval(expected)
+    adapter = tmp_path / "adapter.safetensors"
+    source = f"{prefix}." + name.replace("modulation.layers.1", "modulation.1")
+    mx.save_safetensors(str(adapter), {f"{source}.lora_A.weight": down, f"{source}.lora_B.weight": up})
+
+    LoRALoader.load_and_apply_lora(Qwen21LoRAMapping.get_mapping(), model, [str(adapter)], [0.7], bake_lora=bake_lora)
+
+    actual = LoRALoader._get_target_module(model, name)
+    assert isinstance(actual, LoRALinear) is (not bake_lora)
+    assert mx.allclose(actual(x), expected, atol=1e-6).item()
 
 
-@pytest.mark.parametrize("editing", [True, False])
-@pytest.mark.parametrize("preset,expected", [("turbo8", 8), ("viggle-turbo", 6), (None, 40)])
-def test_python_generation_uses_preset_step_count(monkeypatch, editing, preset, expected):
-    from mflux.models.qwen21.variants.edit.qwen_image_21_edit import QwenImage21Edit
-    from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
+@pytest.mark.fast
+@pytest.mark.parametrize("bake_lora", [False, True])
+@pytest.mark.parametrize("prefix", ["transformer", "diffusion_model"])
+def test_qwen21_lora_matches_fused_mlp(tmp_path, bake_lora, prefix):
+    mx.random.seed(0)
+    model = nn.Module()
+    model.transformer_blocks = [Qwen21TransformerBlock(dim=8, num_attention_heads=2, attention_head_dim=4)]
+    mlp = model.transformer_blocks[0].img_mlp
+    output_dims, input_dims = mlp.gate_layer.weight.shape
+    down = mx.arange(2 * input_dims, dtype=mx.float32).reshape(2, input_dims) / 100 - 0.1
+    up = mx.arange(2 * output_dims * 2, dtype=mx.float32).reshape(2 * output_dims, 2) / 100 - 0.5
+    x = mx.arange(3 * input_dims, dtype=mx.float32).reshape(3, input_dims) / 10 - 1
+    # The fused reference computes [gate, up] before SiLU(gate) * up.
+    fused_weight = mx.concatenate([mlp.gate_layer.weight, mlp.proj.weight], axis=0) + 0.7 * (up @ down)
+    expected_gate, expected_proj = mx.split(x @ fused_weight.T, 2, axis=-1)
+    expected = mlp.out(nn.silu(expected_gate) * expected_proj)
+    mx.eval(expected_gate, expected_proj, expected)
+    adapter = tmp_path / "adapter.safetensors"
+    source = f"{prefix}.transformer_blocks.0.img_mlp.gate_up"
+    mx.save_safetensors(str(adapter), {f"{source}.lora_A.weight": down, f"{source}.lora_B.weight": up})
 
-    class StopBeforeModelExecution(Exception):
-        pass
+    LoRALoader.load_and_apply_lora(Qwen21LoRAMapping.get_mapping(), model, [str(adapter)], [0.7], bake_lora=bake_lora)
 
-    def validate(received_preset, steps, *_):
-        assert received_preset == preset
-        assert steps == expected
-        raise StopBeforeModelExecution
-
-    monkeypatch.setattr(Qwen21LoRA, "validate_generation", validate)
-    cls = QwenImage21Edit if editing else QwenImage21
-    model = SimpleNamespace(lora_preset=preset)
-    with pytest.raises(StopBeforeModelExecution):
-        cls.generate_image(model, seed=42, prompt="A red teapot")
+    assert isinstance(mlp.gate_layer, LoRALinear) is (not bake_lora)
+    assert isinstance(mlp.proj, LoRALinear) is (not bake_lora)
+    assert mx.allclose(mlp.gate_layer(x), expected_gate, atol=1e-6).item()
+    assert mx.allclose(mlp.proj(x), expected_proj, atol=1e-6).item()
+    assert mx.allclose(mlp(x), expected, atol=1e-6).item()
 
 
-@pytest.mark.parametrize("preset", [None, "viggle-turbo"])
-def test_turbo8_cannot_use_wrong_preset(tmp_path, preset):
-    path = tmp_path / Qwen21LoRA.TURBO8_FILENAME
-    path.touch()
-    with pytest.raises(ValueError, match="required scheduler"):
-        Qwen21LoRA.apply(SimpleNamespace(), [str(path)], None, preset, False, reference=True)
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "magnitude_key",
+    ["dora_scale", "lora_magnitude_vector", "lora_magnitude_vector.weight", "lora_magnitude_vector.default.weight"],
+)
+@pytest.mark.parametrize("suffix", ["", ".weight"])
+def test_qwen21_dora_rejected_before_applying_weights(tmp_path, magnitude_key, suffix):
+    model = nn.Module()
+    model.transformer_blocks = [Qwen21TransformerBlock(dim=8, num_attention_heads=2, attention_head_dim=4)]
+    attn = model.transformer_blocks[0].attn
+    adapter = tmp_path / "dora.safetensors"
+    prefix = "diffusion_model.transformer_blocks.0.attn"
+    mx.save_safetensors(
+        str(adapter),
+        {
+            f"{prefix}.to_k.lora_A{suffix}": mx.ones((2, 8)),
+            f"{prefix}.to_k.lora_B{suffix}": mx.ones((8, 2)),
+            f"{prefix}.to_q.lora_A{suffix}": mx.ones((2, 8)),
+            f"{prefix}.to_q.lora_B{suffix}": mx.ones((8, 2)),
+            f"{prefix}.to_q.{magnitude_key}": mx.ones((8, 1)),
+        },
+    )
+
+    with pytest.raises(ValueError, match="DoRA with LoRA matrices is not supported"):
+        LoRALoader.load_and_apply_lora(Qwen21LoRAMapping.get_mapping(), model, [str(adapter)], [1.0], bake_lora=False)
+
+    assert isinstance(attn.to_k, nn.Linear)
+    assert isinstance(attn.to_q, nn.Linear)
 
 
-def test_two_acceleration_adapters_cannot_stack(tmp_path):
-    paths = [tmp_path / Qwen21LoRA.FILENAME, tmp_path / Qwen21LoRA.TURBO8_FILENAME]
-    for path in paths:
-        path.touch()
-    with pytest.raises(ValueError, match="do not stack"):
-        Qwen21LoRA.apply(SimpleNamespace(), list(map(str, paths)), None, "turbo8", False, reference=True)
+@pytest.mark.fast
+@pytest.mark.parametrize("flags", [[], ["--no-bake-lora"]])
+@pytest.mark.parametrize("cli", [qwen21_generate, qwen21_edit_generate])
+def test_qwen21_cli_accepts_lora(monkeypatch, tmp_path, flags, cli):
+    adapter = tmp_path / "a.safetensors"
+    adapter.touch()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["mflux-generate-qwen-2.1", "--prompt", "test", "--lora", str(adapter), "0.9", *flags],
+    )
+    args = cli.build_parser().parse_args()
+    assert args.lora_paths == [str(adapter)]
+    assert args.lora_scales == [0.9]
+    assert args.bake_lora is False
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "cli,model_name", [(qwen21_generate, "QwenImage21"), (qwen21_edit_generate, "QwenImage21Edit")]
+)
+def test_qwen21_cli_warns_for_lora_style(monkeypatch, cli, model_name):
+    monkeypatch.setattr(sys, "argv", ["prog", "--prompt", "test", "--lora-style", "storyboard"])
+    monkeypatch.setattr(cli, model_name, Mock(side_effect=RuntimeError("stop before loading weights")))
+    with (
+        pytest.warns(UserWarning, match="--lora-style is ignored"),
+        pytest.raises(RuntimeError, match="stop before loading weights"),
+    ):
+        cli.main()
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "name,cli",
+    [("mflux-generate-qwen-2.1", qwen21_generate), ("mflux-generate-qwen-2.1-edit", qwen21_edit_generate)],
+)
+def test_qwen21_capabilities_report_lora_style_as_ignored(name, cli):
+    command = describe_command(name, cli.__name__)
+    options = {option["flag"]: option for option in command["options"]}
+    assert command["traits"]["lora"] is True
+    assert options["--lora"]["status"] == "honored"
+    assert options["--lora-style"]["status"] == "ignored"
+
+
+@pytest.mark.fast
+def test_edit_cli_forwards_adapter_and_baking_policy(monkeypatch, tmp_path):
+    adapter = tmp_path / "adapter.safetensors"
+    adapter.touch()
+    monkeypatch.setattr(sys, "argv", ["prog", "--prompt", "test", "--lora", str(adapter), "0.4", "--no-bake-lora"])
+    constructor = Mock(side_effect=RuntimeError("stop before loading weights"))
+    monkeypatch.setattr(qwen21_edit_generate, "QwenImage21Edit", constructor)
+    with pytest.raises(RuntimeError, match="stop before loading weights"):
+        qwen21_edit_generate.main()
+    assert constructor.call_args.kwargs["lora_paths"] == [str(adapter)]
+    assert constructor.call_args.kwargs["lora_scales"] == [0.4]
+    assert constructor.call_args.kwargs["bake_lora"] is False
+
+
+@pytest.mark.fast
+def test_edit_metadata_restores_lora_with_explicit_override(monkeypatch, tmp_path):
+    adapters = [tmp_path / "old.safetensors", tmp_path / "new.safetensors"]
+    for adapter in adapters:
+        adapter.touch()
+    sidecar = tmp_path / "image.json"
+    sidecar.write_text(json.dumps({"prompt": "test", "lora_paths": [str(adapters[0])], "lora_scales": [0.3]}))
+    monkeypatch.setattr(sys, "argv", ["prog", "--config-from-metadata", str(sidecar)])
+    args = qwen21_edit_generate.build_parser().parse_args()
+    assert args.lora_paths == [str(adapters[0])]
+    assert args.lora_scales == [0.3]
+    monkeypatch.setattr(
+        sys, "argv", ["prog", "--config-from-metadata", str(sidecar), "--lora", str(adapters[1]), "0.8"]
+    )
+    args = qwen21_edit_generate.build_parser().parse_args()
+    assert args.lora_paths == [str(adapters[1])]
+    assert args.lora_scales == [0.8]

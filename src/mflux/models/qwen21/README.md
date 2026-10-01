@@ -1,8 +1,6 @@
 # Qwen Image 2.1
 
-For instruction-based single/multiple-reference editing, prefix KV caching, and RGBA output, see [reference editing](reference/README.md) and `mflux-generate-qwen-2.1-edit`. The existing command below retains its text-to-image and strength-based img2img behavior.
-
-Reference editing automatically derives independent, reproducible noise from the seed and input pixels to prevent artifacts when reusing a generated image's seed. See [edit noise and metadata replay](reference/README.md#reproducible-edit-noise).
+For instruction-based single/multiple-reference editing, prefix KV caching, and RGBA output, see [reference editing](reference/README.md) and `uv run mflux-generate-qwen-2.1-edit`. Both commands share the Transformer, VAE encoder/decoder, language decoder, component-loading mechanism, and LoRA mappings. The existing command below retains its text-to-image and strength-based img2img behavior.
 
 MFLUX’s MLX implementation of **Qwen-Image-2.1** (`Qwen/Qwen-Image-2.1`), the second-generation
 Qwen Image text-to-image model.
@@ -84,6 +82,8 @@ Pass `--image-path` and optionally `--image-strength`, like the other models.
 
 ## Notes
 
+The notes below describe `uv run mflux-generate-qwen-2.1`. The reference-editing command has its own [capabilities and limitations](reference/README.md).
+
 - Weights: `Qwen/Qwen-Image-2.1` (~33 GB bf16 on disk: 14.2 GB transformer, 17.5 GB text encoder,
   1.4 GB VAE). The text encoder is kept in bf16 like the 1.x port; quantization applies to the
   transformer and VAE.
@@ -94,9 +94,24 @@ Pass `--image-path` and optionally `--image-strength`, like the other models.
   not mapped or loaded.
 - The prompt template is a raw string (not `apply_chat_template`) with the system-role tokens
   dropped from the final hidden states, matching the reference pipeline exactly.
-- The text prefix KV cache (valid because `causal_condition` makes text activations
-  step-independent) is a planned optimization; the current port recomputes the prefix each step.
-- LoRA inference and an optional six-step Viggle Turbo v0.2.1 preset (eight steps for dense text) are available on both commands;
-  see [LoRA usage and quality limits](reference/README.md#acceleration-lora-local-integration).
-- Reference editing, RGBA output and KV caching use the separate `mflux-generate-qwen-2.1-edit` command.
-- PID decoding and training are not implemented.
+- The text prefix K/V is cached per (prompt, resolution) in the text-to-image command too:
+  `causal_condition` makes text activations step-independent, so each denoise step runs
+  image tokens only against the cached prefix. The cache holds at most the two most recent
+  embeddings (the positive and negative CFG prompts); padded prompts recompute the joint
+  sequence. Set `use_text_cache = False` on the transformer to force the recompute path.
+  The reference-editing command (`uv run mflux-generate-qwen-2.1-edit`) keeps its own prefix cache.
+- Q/K norm+rope runs as one fused custom Metal kernel when available (`head_dim` a multiple
+  of 64 and matching rope tables); `MFLUX_QWEN21_DISABLE_FUSED_PROLOGUE=1` disables it.
+- Step reuse (TeaCache-style, shared across models via `StepCache`): `--step-cache-ratio 0.25`
+  (Python: `generate_image(..., step_cache_ratio=0.25)`) skips the transformer on the ~25% of
+  denoise steps whose timestep-embedding signal changes least (first/last 10% of the run are
+  never skipped) and reuses the previous noise prediction. Measured on M4, 512², 40 steps:
+  1.40× at ratio 0.25 (PSNR 27.5 dB, SSIM 0.943 vs uncached), 1.77× at 0.4 (PSNR 25.4 dB,
+  SSIM 0.910). Skipping depends only on the sigma schedule, so it is deterministic for a given
+  (steps, resolution, ratio), and the ratio is recorded in image metadata. If the selector picks
+  two or more steps in a row, all of them reuse the same noise prediction. `--teacache-ratio`
+  and `teacache_ratio=` remain as aliases.
+- LoRA: `--lora adapter.safetensors 1.0` in either command (PEFT `.default`, `transformer.`, and `diffusion_model.` formats; DoRA and mixed full-weight files are not supported).
+- Shared VAE and language implementations live under `qwen21/model`. Adapters preserve each command's existing color/shape, normalization, attention, and precision behavior. The text-only encoder does not instantiate a vision tower; editing adds visual tokens and DeepStack and uses the language decoder output before final RMSNorm.
+- Original Hugging Face checkpoints and older text/edit exports remain loadable. The loader translates legacy VAE parameter names without changing tensor values. Text-only exports still omit the vision tower and cannot serve as complete editing checkpoints. Old `qwen21.reference` imports remain available as compatibility exports.
+- Not yet supported: PID decoding.

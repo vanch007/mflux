@@ -45,7 +45,7 @@ class Qwen21LoRA:
     @staticmethod
     def validate_generation(preset: str | None, steps: int, guidance: float, negative_prompt: str | None) -> None:
         if preset == Qwen21LoRA.PRESET_VIGGLE:
-            if steps not in ViggleTurboScheduler.SIGMA_NODES:
+            if steps not in ViggleTurboScheduler.SCHEDULES:
                 raise ValueError("viggle-turbo v0.3 requires --steps 6 or 8.")
         elif preset == Qwen21LoRA.PRESET_TURBO8:
             if steps != 8:

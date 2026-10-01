@@ -6,6 +6,7 @@ from mlx import nn
 from mflux.models.common.config import ModelConfig
 from mflux.models.common.config.config import Config
 from mflux.models.common.latent_creator.latent_creator import Img2Img, LatentCreator
+from mflux.models.common.step_cache.step_cache import StepCache
 from mflux.models.common.vae.vae_util import VAEUtil
 from mflux.models.common.weights.saving.model_saver import ModelSaver
 from mflux.models.qwen21.latent_creator.qwen21_latent_creator import Qwen21LatentCreator
@@ -22,6 +23,8 @@ from mflux.utils.image_util import ImageUtil
 
 
 class QwenImage21(nn.Module):
+    lora_preset: str | None = None
+    bake_lora: bool = False
     vae: Qwen21VAE
     transformer: Qwen21Transformer
     text_encoder: Qwen21TextEncoder
@@ -57,15 +60,19 @@ class QwenImage21(nn.Module):
         image_strength: float | None = None,
         scheduler: str | None = None,
         negative_prompt: str | None = None,
+        step_cache_ratio: float | None = None,
+        teacache_ratio: float | None = None,
     ) -> GeneratedImage:
         if num_inference_steps is None:
             num_inference_steps = Qwen21LoRA.PRESET_DEFAULT_STEPS[self.lora_preset] if self.lora_preset else 40
         Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
         scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
         if self.lora_preset and image_path is not None:
-            raise ValueError(
-                "Use QwenImage21Edit for Turbo reference edits; strength-based img2img skips required steps."
-            )
+            raise ValueError("Use QwenImage21Edit for Turbo reference edits; img2img skips required steps.")
+        if teacache_ratio is not None:
+            if step_cache_ratio is not None and step_cache_ratio != teacache_ratio:
+                raise ValueError("Pass step_cache_ratio or its deprecated alias teacache_ratio, not both")
+            step_cache_ratio = teacache_ratio
         config = Config(
             width=width,
             height=height,
@@ -112,40 +119,60 @@ class QwenImage21(nn.Module):
         ctx = self.callbacks.start(seed=seed, prompt=prompt, config=config)
         ctx.before_loop(latents)
 
-        for t in config.time_steps:
-            try:
-                latents = config.scheduler.scale_model_input(latents, t)
-                noise = self.transformer(
-                    t=t,
-                    config=config,
-                    hidden_states=latents,
-                    encoder_hidden_states=prompt_embeds,
-                    encoder_hidden_states_mask=prompt_mask,
-                )
-                if do_true_cfg:
-                    noise_negative = self.transformer(
-                        t=t,
-                        config=config,
-                        hidden_states=latents,
-                        encoder_hidden_states=negative_prompt_embeds,
-                        encoder_hidden_states_mask=negative_prompt_mask,
+        # Qwen-Image-2.1 scores steps with its own timestep-embedding MLP (the TeaCache
+        # signal); models without a richer signal can omit signal_fn and use sigma.
+        step_cache = StepCache.for_run(
+            config,
+            ratio=step_cache_ratio,
+            signal_fn=self.transformer.time_text_embed,
+        )
+
+        try:
+            for t in config.time_steps:
+                try:
+                    latents = config.scheduler.scale_model_input(latents, t)
+                    noise = step_cache.reuse(t)
+                    if noise is None:
+                        noise = self.transformer(
+                            t=t,
+                            config=config,
+                            hidden_states=latents,
+                            encoder_hidden_states=prompt_embeds,
+                            encoder_hidden_states_mask=prompt_mask,
+                        )
+                        if do_true_cfg:
+                            noise_negative = self.transformer(
+                                t=t,
+                                config=config,
+                                hidden_states=latents,
+                                encoder_hidden_states=negative_prompt_embeds,
+                                encoder_hidden_states_mask=negative_prompt_mask,
+                            )
+                            noise = noise_negative + config.guidance * (noise - noise_negative)
+                        step_cache.store(noise)
+
+                    latents = config.scheduler.step(noise=noise, timestep=t, latents=latents)
+                    ctx.in_loop(t, latents)
+                    mx.eval(latents)
+
+                except KeyboardInterrupt:  # noqa: PERF203
+                    ctx.interruption(t, latents)
+                    raise StopImageGenerationException(
+                        f"Stopping image generation at step {t + 1}/{config.num_inference_steps}"
                     )
-                    noise = noise_negative + config.guidance * (noise - noise_negative)
-
-                latents = config.scheduler.step(noise=noise, timestep=t, latents=latents)
-                ctx.in_loop(t, latents)
-                mx.eval(latents)
-
-            except KeyboardInterrupt:  # noqa: PERF203
-                ctx.interruption(t, latents)
-                raise StopImageGenerationException(
-                    f"Stopping image generation at step {t + 1}/{config.num_inference_steps}"
-                )
+        finally:
+            # the text-prefix K/V cache is O(100 MB) per prompt: free it when the loop ends
+            self.transformer.clear_text_cache()
 
         ctx.after_loop(latents)
 
         latents = Qwen21LatentCreator.unpack_latents(latents=latents, height=config.height, width=config.width)
         decoded = VAEUtil.decode(vae=self.vae, latent=latents, tiling_config=self.tiling_config)
+        parameters = step_cache.generation_parameters(step_cache_ratio)
+        if self.lora_preset:
+            parameters["lora_preset"] = self.lora_preset
+        if self.bake_lora:
+            parameters["bake_lora"] = True
         return ImageUtil.to_image(
             decoded_latents=decoded,
             config=config,
@@ -156,11 +183,11 @@ class QwenImage21(nn.Module):
             negative_prompt=negative_prompt,
             lora_paths=self.lora_paths,
             lora_scales=self.lora_scales,
-            generation_parameters={"lora_preset": self.lora_preset, "bake_lora": self.bake_lora},
+            generation_parameters=parameters,
         )
 
     def save_model(self, base_path: str) -> None:
-        if self.lora_paths:
+        if getattr(self, "lora_paths", None):
             raise ValueError("Save the base model without LoRA, then reload its adapters separately.")
         ModelSaver.save_model(
             model=self,

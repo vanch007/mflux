@@ -20,6 +20,7 @@ def build_parser() -> CommandLineParser:
     parser.add_image_to_image_arguments(required=False)
     parser.add_output_arguments()
     parser.add_lora_arguments(bake_lora_default=False)
+    parser.add_step_cache_arguments()
     parser.set_defaults(scheduler=None)
     parser.lora_preset_default_steps = dict(Qwen21LoRA.PRESET_DEFAULT_STEPS)
     parser._option_string_actions["--scheduler"].help = "Automatic: linear for base, viggle_turbo for Turbo."
@@ -90,6 +91,7 @@ def main():
                 image_path=args.image_path,
                 num_inference_steps=args.steps,
                 image_strength=args.image_strength,
+                step_cache_ratio=args.step_cache_ratio,
             )
             image.save(path=args.output.format(seed=seed), export_json_metadata=args.metadata)
     except (StopImageGenerationException, PromptFileReadError) as exc:

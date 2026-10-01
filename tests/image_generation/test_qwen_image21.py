@@ -1,10 +1,12 @@
 import json
+import subprocess
 import sys
 from types import SimpleNamespace
 
 import mlx.core as mx
 import numpy as np
 import pytest
+from mlx.utils import tree_flatten
 from PIL import Image
 
 from mflux.cli.defaults.defaults import model_inference_steps
@@ -13,11 +15,12 @@ from mflux.models.common.config import ModelConfig
 from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.qwen21.cli import qwen21_edit_generate as cli
 from mflux.models.qwen21.cli.qwen21_edit_generate import build_parser
-from mflux.models.qwen21.reference.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
-from mflux.models.qwen21.reference.model.qwen_image21_transformer.layout import QwenImage21Layout
-from mflux.models.qwen21.reference.model.qwen_image21_transformer.transformer import QwenImage21Transformer
-from mflux.models.qwen21.reference.model.qwen_image21_vae.blocks import DownBlock
-from mflux.models.qwen21.reference.weights.qwen_image21_weight_definition import QwenImage21WeightDefinition
+from mflux.models.qwen21.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
+from mflux.models.qwen21.model.qwen21_transformer.qwen21_layout import QwenImage21Layout
+from mflux.models.qwen21.model.qwen21_transformer.qwen_image21_transformer import QwenImage21Transformer
+from mflux.models.qwen21.model.qwen21_vae.blocks import DownBlock
+from mflux.models.qwen21.model.qwen21_vae.vae import QwenImage21VAE
+from mflux.models.qwen21.weights.qwen_image21_weight_definition import QwenImage21WeightDefinition
 from mflux.utils.exceptions import ModelConfigError
 from mflux.utils.generated_image import GeneratedImage
 
@@ -25,6 +28,23 @@ pytestmark = pytest.mark.fast
 
 
 class TestQwenImage21:
+    @pytest.mark.parametrize(
+        "first_import",
+        ["mflux.models.qwen21.reference", "mflux.models.qwen21.variants.edit.qwen_image_21_edit"],
+    )
+    def test_public_import_paths_in_fresh_process(self, first_import):
+        code = f"""
+from {first_import} import QwenImage21Edit
+from mflux.models.qwen21.reference import QwenImage21Edit as exported
+from mflux.models.qwen21.variants.edit.qwen_image_21_edit import QwenImage21Edit as direct
+import mflux.models.qwen21.reference as reference
+assert QwenImage21Edit is exported is direct
+assert reference.__all__ == ["QwenImage21Edit"]
+assert not hasattr(reference, "missing_attribute")
+"""
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
+
     @staticmethod
     def small_transformer():
         return QwenImage21Transformer(
@@ -61,9 +81,20 @@ class TestQwenImage21:
         with pytest.raises(ModelConfigError, match="only accepts"):
             ConfigResolution.resolve_restricted("qwen", "qwen-image-2.1")
 
-    @pytest.mark.parametrize("option,value", [("--width", "31"), ("--steps", "1"), ("--output-resolution", "17")])
+    @pytest.mark.parametrize(
+        "option,value",
+        [
+            ("--width", "31"),
+            ("--steps", "1"),
+            ("--output-resolution", "17"),
+            ("--guidance", "0"),
+            ("--guidance", "nan"),
+            ("--guidance", "inf"),
+            ("--guidance", "-inf"),
+        ],
+    )
     def test_invalid_cli_inputs_fail_before_loading(self, option, value, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["qwen21", "--prompt", "test", option, value])
+        monkeypatch.setattr(sys, "argv", ["qwen21", "--prompt", "test", f"{option}={value}"])
         monkeypatch.setattr(cli, "QwenImage21Edit", lambda **kwargs: pytest.fail("Invalid input reached model loading"))
         with pytest.raises(SystemExit) as error:
             cli.main()
@@ -95,11 +126,49 @@ class TestQwenImage21:
         args = build_parser().parse_args()
         assert args.use_kv_cache and args.output_resolution == 1024
 
+    @pytest.mark.parametrize("option", ["--no-use-kv-cache", "--no-use-kv"])
+    def test_metadata_cannot_reverse_explicit_cache_disable(self, tmp_path, monkeypatch, option):
+        path = tmp_path / "meta.json"
+        path.write_text(json.dumps(dict(model="Qwen/Qwen-Image-2.1", prompt="test", seed=42, use_kv_cache=True)))
+        monkeypatch.setattr(sys, "argv", ["qwen21", "--config-from-metadata", str(path), option])
+        if option == "--no-use-kv-cache":
+            assert build_parser().parse_args().use_kv_cache is False
+        else:
+            with pytest.raises(SystemExit) as error:
+                build_parser().parse_args()
+            assert error.value.code == 2
+
     def test_latent_layout_roundtrip(self):
         x = mx.arange(64 * 2 * 4).reshape(1, 64, 1, 2, 4)
         packed = QwenImage21LatentCreator.pack_latents(x)
         assert packed.shape == (1, 8, 64)
         np.testing.assert_array_equal(np.array(QwenImage21LatentCreator.unpack_latents(packed, 32, 64)), np.array(x))
+
+    def test_vae_legacy_checkpoint_config_matches_canonical_spelling(self):
+        config = dict(
+            base_dim=4,
+            decoder_base_dim=4,
+            z_dim=4,
+            dim_mult=[1, 2, 4, 8, 8],
+            num_res_blocks=1,
+            temporal_downsample=[False, True, True, True],
+            latents_mean=[0.0] * 4,
+            latents_std=[1.0] * 4,
+            is_residual=True,
+            in_channels=4,
+            out_channels=4,
+            patch_size=None,
+        )
+        canonical = QwenImage21VAE(config)
+        legacy_config = dict(config)
+        legacy_config["temperal_downsample"] = legacy_config.pop("temporal_downsample")
+        legacy = QwenImage21VAE(legacy_config)
+        legacy.load_weights(tree_flatten(canonical.parameters()))
+        pixels = mx.ones((1, 4, 1, 32, 32))
+        latents = canonical.encode(pixels)
+        np.testing.assert_array_equal(np.array(legacy.encode(pixels)), np.array(latents))
+        np.testing.assert_array_equal(np.array(legacy.decode(latents)), np.array(canonical.decode(latents)))
+        assert "temporal_downsample" not in legacy_config
 
     @pytest.mark.parametrize(
         "width,height,steps,count", [(31, 32, 40, 0), (32, 48, 40, 0), (32, 32, 1, 0), (32, 32, 40, 11)]
@@ -182,7 +251,11 @@ class TestQwenImage21:
             QwenImage21WeightDefinition.text_key("model.language_model.layers.0.weight")
             == "language_model.layers.0.weight"
         )
-        assert QwenImage21WeightDefinition.text_key("lm_head.weight") is None
+        # kept for greedy decoding (auto-mask, prompt rewriting, verification)
+        assert QwenImage21WeightDefinition.text_key("lm_head.weight") == "lm_head.weight"
+        assert QwenImage21WeightDefinition.text_key("model.language_model.norm.weight") == "language_model.norm.weight"
+        assert QwenImage21WeightDefinition.is_generation_head("lm_head.scales")
+        assert not QwenImage21WeightDefinition.is_generation_head("language_model.layers.0.input_layernorm.weight")
         module = SimpleNamespace(to_quantized=lambda: None, weight=mx.zeros((64, 64)))
         assert QwenImage21WeightDefinition.quantization_predicate("transformer_blocks.0.attn.to_q", module)
         assert not QwenImage21WeightDefinition.quantization_predicate("modulation.1", module)

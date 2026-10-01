@@ -34,7 +34,7 @@ class TestQwenImage21EditQuality:
             seen["vae"] = pixels.shape[-2:]
             return mx.zeros((1, 64, 1, pixels.shape[-2] // 16, pixels.shape[-1] // 16))
 
-        def transformer(hidden, *_):
+        def transformer(hidden, *_, **kwargs):
             return mx.zeros((1, (output_resolution // 16) ** 2, 64), dtype=hidden.dtype)
 
         transformer.axes = (4, 6, 6)

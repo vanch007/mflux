@@ -42,7 +42,7 @@ class TestQwenImage21EditNoise:
         Image.new("RGBA", (32, 32), "red").save(source)
         captured = []
 
-        def transformer(hidden, *_):
+        def transformer(hidden, *_, **kwargs):
             captured.append(np.array(hidden[:, -4:]))
             return mx.zeros((1, 4, 64), dtype=hidden.dtype)
 
