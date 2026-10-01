@@ -10,7 +10,7 @@ Local deployment of Qwen-Image-2.1 through mflux, running natively on Apple Sili
 ## Prerequisites
 
 - **Project location**: `/Users/vanch/mflux-pr736`
-- **Virtual env**: `/Users/vanch/mflux-pr736/.venv` (Python 3.13.5, MLX 0.32.2 (verified 2026-09-26))
+- **Virtual env**: `/Users/vanch/mflux-pr736/.venv` (Python 3.13.5, MLX/Metal 0.32.2 (runtime and lock verified 2026-09-27))
 - **Weights**: `~/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1` (~33 GB bf16)
   - Transformer: 14.2 GB, Text encoder (Qwen3-VL Heretic): 17.5 GB, VAE: 1.4 GB
 - **Text encoder**: Replaced with `pottokao/Qwen-Image-2.1-Text-Encoder-Heretic`; the local RoPE-config compatibility patch must be preserved.
@@ -50,7 +50,7 @@ uv run --no-sync mflux-generate-qwen-2.1-edit \
 | `--reference-resolution` | 1024 | Independent reference encoding budget; keep 1024 for Turbo training alignment |
 | `--use-kv-cache` | ON | Prefix KV caching. Disable with `--no-use-kv-cache` |
 | `--independent-edit-noise` | ON | Prevent reuse of a generated reference's initial noise; disable only for legacy reproduction/parity |
-| `-q 8` or `-q 4` | None (bf16) | Edit pipeline: quantize eligible transformer + text/vision layers; VAE stays fp32 |
+| `-q 8` or `-q 4` | None (bf16) | Quantize eligible transformer + text/vision layers; VAE stays FP32 |
 | `--guidance` | 1.0 | CFG scale. >1.0 with `--negative-prompt` for True CFG |
 | `--output` | image.png | Output path (must be .png, .webp, or .tiff for RGBA) |
 | `--metadata` | off | Export JSON metadata sidecar |
@@ -98,9 +98,9 @@ image.save("edited.png")
 
 Python exposes `independent_edit_noise=True`. Metadata records the requested `seed`, effective `noise_seed`, and this policy. Older metadata files lacking the policy replay with their original direct-seed behavior; add `--independent-edit-noise` to apply the fix when replaying an old sidecar. New sidecars restore the saved policy.
 
-## Optional Viggle v0.2.1 acceleration LoRA
+## Optional Viggle v0.3 acceleration LoRA
 
-Only the v0.2.1 **r128** and **r256** adapters are supported by the Turbo preset. Default is r128, 6 steps, scale 1.0, guidance 1, no negative prompt, runtime LoRA, KV cache ON. The base model remains 40 steps. Verified against the official card on 2026-09-26.
+Only the v0.3 **r128** and **r256** adapters are supported by the Turbo preset. Default is r128, 6 steps, scale 1.0, guidance 1, no negative prompt, runtime LoRA, KV cache ON. The base model remains 40 steps. Verified against the official card on 2026-09-26.
 
 ```sh
 uv run --no-sync mflux-generate-qwen-2.1-edit \
@@ -114,8 +114,8 @@ The preset automatically selects `viggle_turbo`; an explicit incompatible schedu
 - Six raw nodes: `[1, 0.9375, 0.875, 0.75, 0.5, 0.25]`.
 - Eight raw nodes: `[1, 0.9375, 0.875, 0.75, 0.625, 0.5, 0.25, 0.125]`.
 - Apply resolution-dependent shifting once; `sigma_shift_terminal=None`. Never substitute equally spaced 6/8-step nodes or bake into bf16.
-- Both adapters are pinned to revision `bb26a0f38e5fe6c124aaccc9187a87eed5d9ed13` in `Viggle/Qwen-Image-2.1-viggle-turbo`. r128: 679,604,800 bytes; r256: 1,359,147,904 bytes. Base weights are reused.
-- To select r256, add `--lora Viggle/Qwen-Image-2.1-viggle-turbo:Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors 1.0`.
+- Both adapters are pinned to revision `009a44a895ef85f7e643c80fdca9543795248867` in `Viggle/Qwen-Image-2.1-viggle-turbo`. r128: 679,604,800 bytes; r256: 1,359,147,904 bytes. Base weights are reused.
+- To select r256, add `--lora Viggle/Qwen-Image-2.1-viggle-turbo:Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r256.safetensors 1.0`.
 - Add `--image-paths source.png` for editing. References use `--reference-resolution 1024` independently of output dimensions and `--output-resolution`. Prefer dimensions aligned to 32. Strength-based img2img is incompatible with the preset.
 - Python: `QwenImage21Edit(lora_preset="viggle-turbo")`; omitted steps and scheduler resolve to 6 and `viggle_turbo`.
 
@@ -213,7 +213,9 @@ uv run --no-sync mflux-generate-qwen-2.1-edit \
 
 ## Quantization
 
-In the primary edit pipeline, eligible transformer and text/vision encoder layers are quantized; the VAE remains fp32. The older txt2img entry point quantizes transformer/VAE and keeps its text encoder bf16.
+In the primary edit pipeline, `-q` quantizes eligible transformer and text/vision encoder layers; the VAE remains FP32 across the bf16, 8-bit and 4-bit model variants. This pipeline also handles text-only generation.
+
+The user requested removal of the VAE quantization experiment on 2026-09-27. Its CLI/API/config support and both experimental VAE exports have been deleted; use the original FP32 VAE. Historical comparison images and measurements are preserved at `/Users/vanch/mflux-pr736/outputs/qwen21-vae-quantization-2026-09-27/`, with the embedded report `/Users/vanch/Desktop/Qwen21_VAE量化冷机对比_1600x960.html`. Those experimental results do not describe the current deployment.
 
 ```sh
 uv run --no-sync mflux-generate-qwen-2.1-edit --prompt "..." -q 8 --steps 40 --seed 42
