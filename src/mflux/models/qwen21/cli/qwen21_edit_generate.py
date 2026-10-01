@@ -36,8 +36,7 @@ def build_parser() -> CommandLineParser:
     parser.add_model_arguments(require_model_arg=False, default_model="qwen-image-2.1")
     parser.add_image_generator_arguments(supports_metadata_config=True, supports_dimension_scale_factor=True)
     parser.set_defaults(width=None, height=None, scheduler=None)
-    parser.lora_preset_default_steps = {Qwen21LoRA.PRESET: Qwen21LoRA.DEFAULT_STEPS}
-    parser._option_string_actions["--scheduler"].help = "Automatic: linear for base, viggle_turbo for Turbo."
+    parser._option_string_actions["--scheduler"].help = "Automatic: linear for base/Turbo8, viggle_turbo for Viggle."
     for flag in ("--width", "--height"):
         parser._option_string_actions[flag].help = (
             "Output size: a multiple of 32 or a reference-image scale factor (auto means 1x). "
@@ -46,10 +45,11 @@ def build_parser() -> CommandLineParser:
     parser.add_image_paths_arguments(required=False)
     parser.add_output_arguments()
     parser.add_lora_arguments(bake_lora_default=False)
+    parser.lora_preset_default_steps = dict(Qwen21LoRA.PRESET_DEFAULT_STEPS)
     parser.add_argument(
         "--lora-preset",
-        choices=[Qwen21LoRA.PRESET],
-        help="Use the Viggle v0.2.1 runtime adapter: 6 steps by default, or 8 for dense text.",
+        choices=list(Qwen21LoRA.PRESETS),
+        help="Acceleration LoRA preset: 'viggle-turbo' (6/8 steps, viggle_turbo) or 'turbo8' (8 steps, linear).",
     )
     parser.add_argument(
         "--output-resolution",

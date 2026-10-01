@@ -8,7 +8,7 @@ The editing pipeline includes prefix KV caching, quantization, local checkpoint 
 
 ## Acceleration LoRA (local integration)
 
-The optional [Viggle Turbo v0.2.1](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) preset downloads only its 680 MB rank-128 adapter (or the 1.36 GB rank-256 alternative), pinned to revision `bb26a0f38e5fe6c124aaccc9187a87eed5d9ed13`. It reuses the base model, including a locally substituted text encoder.
+The optional [Viggle Turbo v0.3](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) preset downloads only its 680 MB rank-128 adapter (or the 1.36 GB rank-256 alternative), pinned to revision `009a44a895ef85f7e643c80fdca9543795248867`. It reuses the base model, including a locally substituted text encoder.
 
 ```sh
 mflux-generate-qwen-2.1-edit \
@@ -25,7 +25,7 @@ image = model.generate_image(seed=42, prompt="A ceramic teapot", width=1024, hei
 image.save("turbo.png")  # preset defaults to six steps in the Python API
 ```
 
-The scheduler is selected automatically as `viggle_turbo`. Its six raw nodes are `[1, 0.9375, 0.875, 0.75, 0.5, 0.25]`; the resolution-dependent time shift is applied once. `--steps 8` selects the official dense-text nodes `[1, 0.9375, 0.875, 0.75, 0.625, 0.5, 0.25, 0.125]`. Other step counts and an explicit `linear` scheduler are rejected. Scale 1 is the official recipe; custom scales such as 0.85 are available for local comparisons. Turbo CFG above 1 remains experimental and warns because it adds a second pass and can reduce quality. To choose r256, add `--lora Viggle/Qwen-Image-2.1-viggle-turbo:Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors 1.0`. Both adapters remain unquantized and unmerged by default.
+The scheduler is selected automatically as `viggle_turbo`. Its six raw nodes are `[1, 0.9375, 0.875, 0.75, 0.5, 0.25]`; the resolution-dependent time shift is applied once. `--steps 8` selects the official dense-text nodes `[1, 0.9375, 0.875, 0.75, 0.625, 0.5, 0.25, 0.125]`. Other step counts and an explicit `linear` scheduler are rejected. Scale 1 is the official recipe; custom scales such as 0.85 are available for local comparisons. Turbo CFG above 1 remains experimental and warns because it adds a second pass and can reduce quality. To choose r256, add `--lora Viggle/Qwen-Image-2.1-viggle-turbo:Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r256.safetensors 1.0`. Both adapters remain unquantized and unmerged by default.
 
 For other compatible 2.1 adapters, use the shared `--lora PATH SCALE` option or the Python `lora_paths` / `lora_scales` arguments. Diffusers, PEFT, and common ComfyUI/Kohya naming conventions are mapped; unsupported keys, incomplete pairs, and incompatible dimensions are rejected before any adapter is applied. Legacy Qwen Image 20B adapters are incompatible. Nontrivial PEFT alpha/rank patterns, rsLoRA, and DoRA are not supported. Save base checkpoints without adapters and load adapters separately; exporting a LoRA-loaded model is intentionally rejected to prevent accidental baking or loss of the Turbo scheduler.
 
@@ -43,7 +43,9 @@ mflux-generate-qwen-2.1-edit \
 
 Defaults are **40 steps**, **guidance 1.0**, **1024×1024** for text-to-image, and **KV caching enabled**. The aliases `qwen-image-2.1`, `qwen-2.1`, and `qwen-image-21` all select this model; `--model` can be omitted for this command.
 
-The original checkpoint downloads about 33.1 GB of weights, even when quantizing at load time. Quantization applies to eligible transformer and text/vision encoder layers; the VAE stays in fp32. Peak memory depends on resolution, reference images, and quantization. Use `--vae-tiling` to reduce decode memory or `--low-ram` for the common memory-saving callbacks.
+The original checkpoint downloads about 33.1 GB of weights, even when quantizing at load time. `--quantize` applies to eligible transformer and text/vision encoder layers. The VAE remains fp32 for bf16, 8-bit and 4-bit model variants. Peak memory depends on resolution, reference images, and quantization. Use `--vae-tiling` to reduce decode memory or `--low-ram` for the common memory-saving callbacks.
+
+The experimental VAE quantization implementation and local quantized VAE exports were removed at the user's request on 2026-09-27. The original FP32 VAE remains in use. Historical images and measurements are retained in `outputs/qwen21-vae-quantization-2026-09-27/`.
 
 Explicit width and height must be multiples of 32. The upstream model-card examples use 2048×2048; request that size explicitly:
 
@@ -171,3 +173,27 @@ MFLUX_PRESERVE_TEST_OUTPUT=1 uv run \
 ```
 
 Real checkpoint tests have produced 1024-pixel text-to-image and transparent PNG outputs, 512-pixel single- and two-reference edits, a successful 896×1152 two-reference clothing edit using the official ComfyUI workflow inputs, and pixel-identical output after 8-bit checkpoint export/reload. An older 2048-pixel four-step run was an execution check, not a current Turbo preset recommendation. The original 1024×1024 panda edits missed the requested changes in both MLX and the controlled Diffusers reference run; expanding the prompts did not resolve those samples. See [VALIDATION.md](VALIDATION.md) for exact settings, numerical differences, and limitations.
+
+
+### Turbo8 and independent adapter strengths
+
+Use `--lora-preset turbo8` for `chriswritescode/Turbo8-LoRA-Qwen-Image-2.1`.
+CLI and Python calls default to 8 steps, linear Euler sampling with the base
+resolution shift, terminal stretching disabled, and runtime LoRA. Guidance 1
+and scale 1 are the initial recipe; an explicit scale such as 0.85 is preserved.
+Pass the matching adapter explicitly when customizing its scale:
+
+```sh
+uv run --no-sync mflux-generate-qwen-2.1-edit \
+  --model /path/to/Qwen-Image-2.1-Heretic-mlx-bf16 \
+  --lora-preset turbo8 \
+  --lora chriswritescode/Turbo8-LoRA-Qwen-Image-2.1:turbo8_lora_step2500.safetensors 0.85 \
+  --prompt "A ceramic teapot on a wooden table" --seed 42 --output turbo8.png
+```
+
+Append `--image-paths source.png` for editing. Standard Hugging Face cached
+adapters are found offline without making another copy. Additional ordinary
+adapters use separate `--lora PATH SCALE` arguments; never stack two acceleration
+students. The local WebUI reports the effective adapter, scale, sampler, mode,
+steps and requested seed, including automatically generated seeds. A selected
+recipe is not a guarantee of skin quality; compare identical prompts and seeds.

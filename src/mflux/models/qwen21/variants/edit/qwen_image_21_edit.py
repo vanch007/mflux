@@ -58,7 +58,9 @@ class QwenImage21Edit(nn.Module):
     ) -> GeneratedImage:
         if num_inference_steps is None:
             num_inference_steps = (
-                Qwen21LoRA.DEFAULT_STEPS if self.lora_preset else MODEL_INFERENCE_STEPS["qwen-image-2.1"]
+                Qwen21LoRA.PRESET_DEFAULT_STEPS[self.lora_preset]
+                if self.lora_preset
+                else MODEL_INFERENCE_STEPS["qwen-image-2.1"]
             )
         Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
         scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)

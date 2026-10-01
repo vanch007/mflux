@@ -222,7 +222,10 @@ class TestQwen21LoRA:
         path.touch()
         monkeypatch.setattr(Qwen21LoRA, "_validate", lambda *_: None)
         model = SimpleNamespace(transformer=SimpleNamespace())
-        monkeypatch.setattr("mflux.models.common.lora.mapping.lora_loader.LoRALoader.load_and_apply_lora", lambda *args, **kwargs: ([str(path)], [0.85]))
+        monkeypatch.setattr(
+            "mflux.models.common.lora.mapping.lora_loader.LoRALoader.load_and_apply_lora",
+            lambda *args, **kwargs: ([str(path)], [0.85]),
+        )
         Qwen21LoRA.apply(model, [str(path)], [0.85], "viggle-turbo", False, reference=True)
         assert model.lora_scales == [0.85]
 
@@ -230,3 +233,49 @@ class TestQwen21LoRA:
     def test_scheduler_cannot_silently_switch_model_recipe(self, preset, scheduler):
         with pytest.raises(ValueError):
             Qwen21LoRA.resolve_scheduler(preset, scheduler)
+
+
+@pytest.mark.parametrize("module", [qwen21_generate, qwen21_edit_generate])
+def test_turbo8_cli_defaults_to_eight_steps(monkeypatch, module):
+    monkeypatch.setattr(sys, "argv", ["qwen21", "--prompt", "test", "--lora-preset", "turbo8"])
+    args = module.build_parser().parse_args()
+    assert args.steps == 8
+    assert Qwen21LoRA.resolve_scheduler(args.lora_preset, args.scheduler) == "linear"
+    assert Qwen21LoRA.configure(ModelConfig.qwen_image_21(), "turbo8").sigma_shift_terminal is None
+
+
+@pytest.mark.parametrize("editing", [True, False])
+@pytest.mark.parametrize("preset,expected", [("turbo8", 8), ("viggle-turbo", 6), (None, 40)])
+def test_python_generation_uses_preset_step_count(monkeypatch, editing, preset, expected):
+    from mflux.models.qwen21.variants.edit.qwen_image_21_edit import QwenImage21Edit
+    from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
+
+    class StopBeforeModelExecution(Exception):
+        pass
+
+    def validate(received_preset, steps, *_):
+        assert received_preset == preset
+        assert steps == expected
+        raise StopBeforeModelExecution
+
+    monkeypatch.setattr(Qwen21LoRA, "validate_generation", validate)
+    cls = QwenImage21Edit if editing else QwenImage21
+    model = SimpleNamespace(lora_preset=preset)
+    with pytest.raises(StopBeforeModelExecution):
+        cls.generate_image(model, seed=42, prompt="A red teapot")
+
+
+@pytest.mark.parametrize("preset", [None, "viggle-turbo"])
+def test_turbo8_cannot_use_wrong_preset(tmp_path, preset):
+    path = tmp_path / Qwen21LoRA.TURBO8_FILENAME
+    path.touch()
+    with pytest.raises(ValueError, match="required scheduler"):
+        Qwen21LoRA.apply(SimpleNamespace(), [str(path)], None, preset, False, reference=True)
+
+
+def test_two_acceleration_adapters_cannot_stack(tmp_path):
+    paths = [tmp_path / Qwen21LoRA.FILENAME, tmp_path / Qwen21LoRA.TURBO8_FILENAME]
+    for path in paths:
+        path.touch()
+    with pytest.raises(ValueError, match="do not stack"):
+        Qwen21LoRA.apply(SimpleNamespace(), list(map(str, paths)), None, "turbo8", False, reference=True)

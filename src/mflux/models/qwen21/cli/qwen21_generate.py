@@ -21,12 +21,12 @@ def build_parser() -> CommandLineParser:
     parser.add_output_arguments()
     parser.add_lora_arguments(bake_lora_default=False)
     parser.set_defaults(scheduler=None)
-    parser.lora_preset_default_steps = {Qwen21LoRA.PRESET: Qwen21LoRA.DEFAULT_STEPS}
+    parser.lora_preset_default_steps = dict(Qwen21LoRA.PRESET_DEFAULT_STEPS)
     parser._option_string_actions["--scheduler"].help = "Automatic: linear for base, viggle_turbo for Turbo."
     parser.add_argument(
         "--lora-preset",
-        choices=[Qwen21LoRA.PRESET],
-        help="Use the Viggle v0.2.1 runtime adapter: 6 steps by default, or 8 for dense text.",
+        choices=list(Qwen21LoRA.PRESETS),
+        help="Acceleration LoRA preset: 'viggle-turbo' (6/8 steps, viggle_turbo) or 'turbo8' (8 steps, linear).",
     )
     return parser
 
