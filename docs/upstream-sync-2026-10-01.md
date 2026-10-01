@@ -57,7 +57,9 @@ GitNexus 1.6.12 的最终提交前检查记录了 179 个变更文件、976 个�
 
 ## 现有模型限制
 
-本地 Heretic MLX 导出没有语言生成用的 `lm_head`。文生图、参考编辑和 WebUI 的 oMLX PE 正常保留；新增的核心内置自动蒙版和结果验证需要包含该生成头的权重。内置 `--enhance-prompt` 在缺少生成头时记录警告并保留原提示词。因此本次没有声称这些内置辅助能力已在当前 Heretic 权重上完成实测。
+同步验证时，本地 Heretic MLX 导出没有语言生成用的 `lm_head`。文生图、参考编辑和 WebUI 的 oMLX PE 正常保留；新增的核心内置自动蒙版和结果验证需要包含该生成头的权重。内置 `--enhance-prompt` 在缺少生成头时记录警告并保留原提示词，因此上游同步本身未验证这些辅助能力。
+
+后续已从原 Heretic 检查点补回 `lm_head.weight` 和 `language_model.norm.weight`，并完成真实辅助功能验证；详见 [Heretic 生成头恢复记录](heretic-generation-head-2026-10-01.md)。
 
 ## 本地提交与恢复点
 

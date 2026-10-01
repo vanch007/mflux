@@ -122,7 +122,13 @@ mflux-generate-qwen-2.1-edit \
 
 Auto-mask, prompt rewriting and verification decode greedily with the text encoder's own untied `lm_head`, so they need no extra download. The head is about 1.2 GB in bf16 and 0.66 GB at q8. The loader keeps it lazy and reads it only when one of these options first uses it. `save_model` still writes the head, so exports keep these options. Checkpoints saved before this support existed do not have the head. They still generate. Auto-mask and verification raise a missing-head error; prompt rewriting logs a warning and retains the original instruction.
 
-The local Heretic MLX export does not contain `lm_head`; generation and editing still work, while built-in auto-mask, rewrite and verification need an export containing that head. The WebUI continues to use its configured oMLX model for prompt rewriting. Acceleration presets require the complete distilled schedule, so `--strength` must remain `1.0` with Viggle/Turbo8. Step skipping is disabled by default.
+Older Heretic MLX exports omitted both `lm_head.weight` and `language_model.norm.weight`. The original Heretic checkpoint contains them. Restore the missing BF16 tensors without replacing the encoder's existing weights:
+
+```sh
+uv run python scripts/restore_qwen21_heretic_head.py --model-path /path/to/Qwen-Image-2.1-Heretic-mlx-bf16
+```
+
+The utility retrieves only the required byte ranges from a pinned Heretic revision, validates tensor shapes, backs up the weight index, and records source hashes beside the new shard. The local BF16 export was restored and its grounding, rewriting and verification were tested on 2026-10-01; see [the validation record](../../../../../docs/heretic-generation-head-2026-10-01.md). The WebUI continues to use its configured oMLX model for prompt rewriting. Acceleration presets require the complete distilled schedule, so `--strength` must remain `1.0` with Viggle/Turbo8. Step skipping is disabled by default.
 
 ## Transparent output
 

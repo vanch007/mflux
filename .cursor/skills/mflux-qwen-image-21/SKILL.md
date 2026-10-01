@@ -11,9 +11,10 @@ Local deployment of Qwen-Image-2.1 through mflux, running natively on Apple Sili
 
 - **Project location**: `/Users/vanch/mflux-pr736`
 - **Virtual env**: `/Users/vanch/mflux-pr736/.venv` (Python 3.13.5, MLX/Metal 0.32.2 (runtime and lock verified 2026-09-27))
-- **Weights**: `~/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1` (~33 GB bf16)
+- **Deployed weights**: `/Users/vanch/models/mlx/Qwen-Image-2.1-Heretic-mlx-bf16` (~33 GB bf16)
   - Transformer: 14.2 GB, Text encoder (Qwen3-VL Heretic): 17.5 GB, VAE: 1.4 GB
 - **Text encoder**: Replaced with `pottokao/Qwen-Image-2.1-Text-Encoder-Heretic`; the local RoPE-config compatibility patch must be preserved.
+- **Generation head**: The deployed export includes the original Heretic BF16 `lm_head.weight` and final norm (restored 2026-10-01). Built-in `--auto-mask`, `--enhance-prompt` and `--verify` passed real calls; ordinary conditioning is bit-identical. Older headless BF16 exports can use `uv run python scripts/restore_qwen21_heretic_head.py --model-path PATH`. Evidence: `docs/heretic-generation-head-2026-10-01.md`. The head stays lazy until an auxiliary text-generation call; WebUI oMLX PE remains separately configured.
 - **Memory**: Peak ~46 GB at bf16. 64 GB machine recommended. Use `-q 8` for tighter memory.
 - **All commands** must run from the project directory:
 
