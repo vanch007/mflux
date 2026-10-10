@@ -5,6 +5,50 @@ from mflux.models.common.schedulers.base_scheduler import BaseScheduler
 from mflux.models.common.schedulers.linear_scheduler import LinearScheduler
 
 
+class QwenTurboScheduler(BaseScheduler):
+    """Official 8-step sampling schedule for Qwen-Image-2.1-Turbo.
+
+    Uses the exact trained sample_sigmas from the model_index.json without
+    dynamic shifting or terminal scaling, matching official Diffusers PR #14950.
+    """
+    OFFICIAL_SIGMAS = (1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568)
+
+    def __init__(self, config):
+        self.config = config
+        steps = config.num_inference_steps
+        if steps != 8:
+            raise ValueError(
+                f"qwen_turbo supports the official 8-step schedule, got {steps}. "
+                "Use --steps 8 for official Qwen-Image-2.1-Turbo."
+            )
+        sigmas_list = list(self.OFFICIAL_SIGMAS) + [0.0]
+        self._sigmas = mx.array(sigmas_list, dtype=mx.float32)
+        self._timesteps = self._sigmas[:-1] * 1000.0
+
+    @staticmethod
+    def check_args(parser, args) -> None:
+        if args.scheduler != "qwen_turbo":
+            return
+        if args.steps != 8:
+            parser.error("--scheduler qwen_turbo requires --steps 8.")
+
+    @property
+    def sigmas(self) -> mx.array:
+        return self._sigmas
+
+    @property
+    def timesteps(self) -> mx.array:
+        return self._timesteps
+
+    def step(self, noise: mx.array, timestep: int, latents: mx.array, **kwargs) -> mx.array:
+        dt = (self._sigmas[timestep + 1] - self._sigmas[timestep]).astype(latents.dtype)
+        return latents + noise.astype(latents.dtype) * dt
+
+
+register_contrib(QwenTurboScheduler, "qwen_turbo")
+register_contrib(QwenTurboScheduler, "QwenTurboScheduler")
+
+
 class ViggleTurboScheduler(BaseScheduler):
     SIGMA_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25)
     SCHEDULES = {

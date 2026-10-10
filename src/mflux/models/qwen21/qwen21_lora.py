@@ -70,6 +70,8 @@ class Qwen21LoRA:
             return "linear"
         if scheduler in ("viggle_turbo", "ViggleTurboScheduler"):
             raise ValueError("The viggle_turbo scheduler requires --lora-preset viggle-turbo.")
+        if scheduler in ("qwen_turbo", "QwenTurboScheduler"):
+            return "qwen_turbo"
         return scheduler or "linear"
 
     @staticmethod

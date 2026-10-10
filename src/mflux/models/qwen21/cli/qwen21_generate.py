@@ -53,7 +53,13 @@ def main():
         DEFAULT_MODEL,
         model_path=args.model_path,
         base_model=args.base_model,
-        extra_keys=("qwen-image-2.1-heretic-8bit", "qwen-image-2.1-heretic-4bit", "qwen-image-2.1-heretic-bf16"),
+        extra_keys=(
+            "qwen-image-2.1-heretic-8bit",
+            "qwen-image-2.1-heretic-4bit",
+            "qwen-image-2.1-heretic-bf16",
+            "qwen-image-2.1-heretic-hdr-bf16",
+            "qwen-image-2.1-noctq-hdr-bf16",
+        ),
     )
 
     qwen = QwenImage21(

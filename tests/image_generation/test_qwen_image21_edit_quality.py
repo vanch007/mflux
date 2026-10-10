@@ -71,6 +71,56 @@ class TestQwenImage21EditQuality:
         assert image.image.size == (output_resolution, output_resolution)
         assert image._get_metadata()["reference_resolution"] == budget
 
+    @pytest.mark.parametrize("source_size,expected", [((128, 64), (96, 32)), ((64, 128), (32, 96))])
+    @pytest.mark.parametrize("explicit_dimensions", [False, True])
+    def test_multi_reference_output_aspect_uses_first_source(
+        self, tmp_path, source_size, expected, explicit_dimensions
+    ):
+        source = tmp_path / "source.png"
+        outfit = tmp_path / "outfit.png"
+        Image.new("RGB", source_size, "red").save(source)
+        Image.new("RGB", source_size[::-1], "blue").save(outfit)
+
+        def encode_prompt(_, images):
+            slots = sum((image.width // 32) * (image.height // 32) for image in images)
+            return mx.zeros((1, slots + 1, 16)), mx.array([False] + [True] * slots)
+
+        def transformer(hidden, text, timestep, layout, *_, **kwargs):
+            return mx.zeros((1, layout.target_tokens, 64), dtype=hidden.dtype)
+
+        transformer.axes = (4, 6, 6)
+        model = SimpleNamespace(
+            lora_preset=None,
+            model_config=ModelConfig.qwen_image_21(),
+            processor=SimpleNamespace(
+                image_processor=SimpleNamespace(size={"shortest_edge": 1, "longest_edge": 4096**2})
+            ),
+            _encode_prompt=encode_prompt,
+            transformer=transformer,
+            vae=SimpleNamespace(
+                encode=lambda pixels: mx.zeros((1, 64, 1, pixels.shape[-2] // 16, pixels.shape[-1] // 16)),
+                decode=lambda latents: mx.zeros((1, 4, latents.shape[-2] * 16, latents.shape[-1] * 16)),
+            ),
+            callbacks=CallbackRegistry(),
+            tiling_config=None,
+            bits=None,
+            lora_paths=[],
+            lora_scales=[],
+            bake_lora=False,
+        )
+        dimensions = {"width": 64, "height": 64} if explicit_dimensions else {}
+        image = QwenImage21Edit.generate_image(
+            model,
+            seed=42,
+            prompt="Change the outfit",
+            image_paths=[source, outfit],
+            num_inference_steps=2,
+            output_resolution=64,
+            reference_resolution=64,
+            **dimensions,
+        )
+        assert image.image.size == ((64, 64) if explicit_dimensions else expected)
+
     @pytest.mark.parametrize("saved_reference", [None, 1024])
     def test_reference_budget_metadata_and_explicit_override(self, tmp_path, monkeypatch, saved_reference):
         data = {"model": "Qwen/Qwen-Image-2.1", "prompt": "red", "output_resolution": 1536}

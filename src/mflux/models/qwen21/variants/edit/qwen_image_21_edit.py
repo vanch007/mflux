@@ -80,8 +80,8 @@ class QwenImage21Edit(nn.Module):
             )
         Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
         scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
-        if scheduler not in ("linear", "viggle_turbo"):
-            raise ValueError("Qwen-Image-2.1 editing supports linear or viggle_turbo Euler sampling only.")
+        if scheduler not in ("linear", "viggle_turbo", "qwen_turbo"):
+            raise ValueError("Qwen-Image-2.1 editing supports linear, viggle_turbo, or qwen_turbo Euler sampling only.")
         if self.lora_preset and strength != 1.0:
             raise ValueError("Acceleration presets require strength=1 to retain all trained steps.")
         image_paths = image_paths or []
@@ -97,10 +97,10 @@ class QwenImage21Edit(nn.Module):
         if needs_source and not image_paths:
             raise ValueError("mask_image, auto_mask, strength, enhance_prompt and verify need a reference image.")
         images = [open_oriented(path).convert("RGBA") for path in image_paths]
-        # The first reference is the edit source: inpaint blending, strength starts,
-        # prompt rewriting and verification all read it at its own size.
+        # The first reference sets the output aspect ratio and is the edit source
+        # for inpaint blending, strength starts, prompt rewriting and verification.
         source = images[0] if images else None
-        ratio = images[-1].width / images[-1].height if images else 1.0
+        ratio = source.width / source.height if source else 1.0
         default_width, default_height = QwenImage21LatentCreator.dimensions(output_resolution, ratio)
         width = default_width if width is None else width
         height = default_height if height is None else height

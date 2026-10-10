@@ -175,8 +175,8 @@ def main() -> None:
         if not math.isfinite(guidance) or guidance < 1:
             raise ValueError("guidance must be finite and at least 1.")
         args.scheduler = Qwen21LoRA.resolve_scheduler(args.lora_preset, args.scheduler)
-        if args.scheduler not in ("linear", "viggle_turbo"):
-            raise ValueError("Qwen-Image-2.1 editing supports linear or viggle_turbo Euler sampling only.")
+        if args.scheduler not in ("linear", "viggle_turbo", "qwen_turbo"):
+            raise ValueError("Qwen-Image-2.1 editing supports linear, viggle_turbo, or qwen_turbo Euler sampling only.")
         Qwen21LoRA.validate_generation(
             args.lora_preset, args.steps, 1.0 if args.guidance is None else args.guidance, args.negative_prompt
         )
@@ -199,7 +199,13 @@ def main() -> None:
             "qwen-image-2.1",
             model_path=args.model_path,
             base_model=args.base_model,
-            extra_keys=("qwen-image-2.1-heretic-8bit", "qwen-image-2.1-heretic-4bit", "qwen-image-2.1-heretic-bf16"),
+            extra_keys=(
+                "qwen-image-2.1-heretic-8bit",
+                "qwen-image-2.1-heretic-4bit",
+                "qwen-image-2.1-heretic-bf16",
+                "qwen-image-2.1-heretic-hdr-bf16",
+                "qwen-image-2.1-noctq-hdr-bf16",
+            ),
         )
     except (ModelConfigError, ValueError) as exc:
         parser.error(str(exc))

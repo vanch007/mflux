@@ -54,6 +54,8 @@ MODEL_INFERENCE_STEPS = {
     "qwen-image-2.1-heretic-8bit": 40,
     "qwen-image-2.1-heretic-4bit": 40,
     "qwen-image-2.1-heretic-bf16": 40,
+    "qwen-image-2.1-heretic-hdr-bf16": 40,
+    "qwen-image-2.1-noctq-hdr-bf16": 40,
     "schnell": 4,
     "schnell-controlnet-canny": 4,
     "z-image": 50,
