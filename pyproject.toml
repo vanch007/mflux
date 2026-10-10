@@ -14,7 +14,7 @@ source-exclude = [
 
 [project]
 name = "mflux"
-version = "0.20.0"
+version = "0.22.0"
 description = "MLX native implementations of state-of-the-art generative image models."
 readme = "README.md"
 keywords = ["flux", "ai", "ml", "transformers", "mlx", "huggingface", "apple-silicon", "diffusers", "qwen", "qwen-image", "seedvr2", "z-image"]
@@ -44,7 +44,7 @@ dependencies = [
     "torch>=2.13.0,<3.0",
     "tqdm>=4.66.5,<5.0",
     "transformers>=5.5.0,<6.0",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
     "protobuf>=4.25.0,<8.0",
     # Already present through huggingface-hub; declared so mflux-capabilities --format yaml
     # does not depend on a transitive dependency staying where it is.
@@ -52,7 +52,11 @@ dependencies = [
 
     # Security floor for anyio, which is used transitively by httpx through huggingface-hub;
     # mflux does not import it directly
-    "anyio>=4.14.2,<5.0"
+    "anyio>=4.14.2,<5.0",
+
+    # Security floor for fsspec (GHSA-27vj-qcqg-25rc), which comes in through huggingface-hub and torch;
+    # mflux does not import it directly
+    "fsspec>=2026.6.0",
 ]
 classifiers = [
     "Intended Audience :: Developers",
@@ -87,7 +91,7 @@ dev = [
 dev = { requires-python = ">=3.13" }
 
 [project.urls]
-homepage = "https://github.com/filipstrand/mflux"
+homepage = "https://github.com/mflux-community/mflux"
 
 [project.scripts]
 mflux-generate = "mflux.models.flux.cli.flux_generate:main"
@@ -106,6 +110,7 @@ mflux-generate-qwen = "mflux.models.qwen.cli.qwen_image_generate:main"
 mflux-generate-qwen-edit = "mflux.models.qwen.cli.qwen_image_edit_generate:main"
 "mflux-generate-qwen-2.1" = "mflux.models.qwen21.cli.qwen21_generate:main"
 "mflux-generate-qwen-2.1-edit" = "mflux.models.qwen21.cli.qwen21_edit_generate:main"
+"mflux-generate-qwen-2.1-controlnet" = "mflux.models.qwen21.cli.qwen21_controlnet_generate:main"
 mflux-generate-fibo = "mflux.models.fibo.cli.fibo_generate:main"
 mflux-generate-fibo-edit = "mflux.models.fibo.cli.fibo_edit:main"
 mflux-generate-z-image = "mflux.models.z_image.cli.z_image_generate:main"
@@ -137,6 +142,8 @@ line-length = 120
 indent-width = 4
 target-version = "py310"
 respect-gitignore = true
+# Vendored skill. Keep it the same as the upstream skill.
+extend-exclude = [".cursor/skills/asd-ste100"]
 
 [tool.ruff.lint]
 select = ["BLE", "E4", "E7", "E9", "F", "I", "ICN", "LOG", "PERF", "W"]

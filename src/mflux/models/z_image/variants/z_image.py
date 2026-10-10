@@ -35,6 +35,8 @@ class ZImage(nn.Module):
         lora_scales: list[float] | None = None,
         bake_lora: bool = True,
         model_config: ModelConfig = ModelConfig.z_image_turbo(),
+        float32: bool = False,
+        compute_precision: mx.Dtype | None = None,
     ):
         super().__init__()
         ZImageInitializer.init(
@@ -45,6 +47,8 @@ class ZImage(nn.Module):
             lora_scales=lora_scales,
             bake_lora=bake_lora,
             model_config=model_config,
+            float32=float32,
+            compute_precision=compute_precision,
         )
 
     def generate_image(
@@ -135,6 +139,8 @@ class ZImage(nn.Module):
                 )
 
         # 7. Call subscribers after loop
+        # The predict closure holds the transformer. Delete it so that --low-ram can free the transformer before decode.
+        del predict
         ctx.after_loop(latents)
 
         # 8. Decode the latents and return the image
@@ -160,6 +166,10 @@ class ZImage(nn.Module):
             negative_prompt=negative_prompt,
             pid_decode=pid_decode,
             pid_degrade_sigma=pid_degrade_sigma,
+            generation_parameters={
+                **({"float32": True} if self.float32 else {}),
+                **self.compute_precision.generation_parameters(),
+            },
         )
 
     def _encode_prompts(

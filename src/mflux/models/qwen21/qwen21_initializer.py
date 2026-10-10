@@ -5,6 +5,7 @@ from mlx.utils import tree_flatten, tree_unflatten
 
 import mflux.models.qwen21.model.qwen21_scheduler  # noqa: F401 — register the viggle_turbo scheduler
 from mflux.callbacks.callback_registry import CallbackRegistry
+from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.config import ModelConfig
 from mflux.models.common.lora.mapping.lora_loader import LoRALoader
 from mflux.models.common.resolution.path_resolution import PathResolution
@@ -28,7 +29,9 @@ class Qwen21Initializer:
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
         bake_lora: bool = True,
+        compute_precision: mx.Dtype | None = None,
     ) -> None:
+        precision = ComputePrecision(compute_precision)
         path = model_path if model_path else model_config.model_name
         Qwen21Initializer.init_config(model, model_config)
         root = PathResolution.resolve(path, Qwen21WeightDefinition.get_download_patterns())
@@ -38,10 +41,14 @@ class Qwen21Initializer:
         Qwen21Initializer._init_models(model)
         Qwen21Initializer.load_components(model, root, Qwen21WeightDefinition, quantize, validate=True)
         Qwen21Initializer.apply_lora(model, lora_paths, lora_scales, bake_lora)
+        model.compute_precision = precision
+        if compute_precision is not None:
+            # Last, so it casts the final parameters, whatever quantization and LoRA produced.
+            model.transformer.apply_compute_precision(precision)
 
     @staticmethod
     def load_components(model, root: Path, weight_definition, quantize: int | None, *, validate: bool = False) -> None:
-        # Release each dense component before loading the next, especially for edit's visual encoder.
+        # Load and check one component at a time; the parameters stay lazy (see the end of the loop).
         model.bits = None
         for component in weight_definition.get_components():
             module = getattr(model, component.model_attr or component.name)
@@ -70,25 +77,10 @@ class Qwen21Initializer:
                 model.bits = bits
             if validate and weights.meta_data.quantization_level is not None:
                 Qwen21Initializer._validate_weights(component.name, module, supplied, weight_definition)
-            # Drop the loader's references first, then materialize a few tensors at a time:
-            # each dense source is freed once its quantized result exists, so the peak is the
-            # quantized component plus one chunk rather than dense and quantized side by side.
+            # The parameters stay lazy: each one is read (and quantized) when a forward pass first
+            # needs it. Evaluating every component here held all of them at once, parts a run never
+            # uses included, and --low-ram could only free the text encoder after that peak (#832).
             del weights, supplied
-            Qwen21Initializer._materialize(component.name, module, weight_definition)
-            mx.clear_cache()
-
-    @staticmethod
-    def _materialize(name: str, module, weight_definition) -> None:
-        # The text encoder's generation head (lm_head, ~1.2 GB bf16) serves only auto-mask,
-        # prompt rewriting and verification. Leaving it lazy defers its read and quantization
-        # to first use, so runs without those options never hold it.
-        is_generation_head = getattr(weight_definition, "is_generation_head", None)
-        deferred = is_generation_head if name == "text_encoder" else None
-        parameters = [
-            value for key, value in tree_flatten(module.parameters()) if deferred is None or not deferred(key)
-        ]
-        for start in range(0, len(parameters), 8):
-            mx.eval(parameters[start : start + 8])
 
     @staticmethod
     def apply_lora(

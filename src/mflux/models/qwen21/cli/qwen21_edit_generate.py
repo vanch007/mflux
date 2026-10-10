@@ -3,11 +3,13 @@ import math
 from pathlib import Path
 
 from mflux.callbacks.callback_manager import CallbackManager
-from mflux.cli.parser.parsers import CommandLineParser
+from mflux.cli.parser.parsers import CommandLineParser, lora_init_kwargs_from_args
+from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
-from mflux.models.qwen21.reference import QwenImage21Edit
-from mflux.models.qwen21.reference.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
+from mflux.models.qwen21.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
+from mflux.models.qwen21.model.qwen21_scheduler import ViggleTurboScheduler, QwenTurboScheduler
+from mflux.models.qwen21.variants.edit.qwen_image_21_edit import EDIT_SCHEDULERS, MAX_REFERENCES, QwenImage21Edit
 from mflux.utils.dimension_resolver import DimensionResolver
 from mflux.utils.exceptions import ModelConfigError, PromptFileReadError, StopImageGenerationException
 from mflux.utils.prompt_util import PromptUtil
@@ -35,6 +37,8 @@ def build_parser() -> CommandLineParser:
     parser = CommandLineParser(description="Generate and edit RGB/RGBA images with Qwen-Image-2.1.")
     parser.add_general_arguments()
     parser.add_model_arguments(require_model_arg=False, default_model="qwen-image-2.1")
+    parser.add_compute_precision_arguments()
+    parser.add_lora_arguments()
     parser.add_image_generator_arguments(supports_metadata_config=True, supports_dimension_scale_factor=True)
     parser.set_defaults(width=None, height=None, scheduler=None)
     parser._option_string_actions["--scheduler"].help = "Automatic: linear for base/Turbo8, viggle_turbo for Viggle."
@@ -101,7 +105,7 @@ def build_parser() -> CommandLineParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Skip unchanged transformer blocks on similar steps (faster, slightly different output; "
-        "needs --use-kv-cache).",
+        "needs --use-kv-cache; runs under 10 steps skip nothing).",
     )
     parser.add_argument(
         "--step-cache-threshold",
@@ -164,9 +168,13 @@ def main() -> None:
         )
     if Path(args.output).suffix.lower() not in (".png", ".webp", ".tif", ".tiff"):
         parser.error("Qwen-Image-2.1 outputs RGBA; use PNG, WebP or TIFF to retain transparency.")
+    if args.scheduler == "viggle_turbo":
+        ViggleTurboScheduler.check_args(parser, args)
+    elif args.scheduler == "qwen_turbo":
+        QwenTurboScheduler.check_args(parser, args)
     paths = args.image_paths or []
-    if len(paths) > 10:
-        parser.error("Qwen-Image-2.1 supports at most 10 reference images.")
+    if len(paths) > MAX_REFERENCES:
+        parser.error(f"Qwen-Image-2.1 supports at most {MAX_REFERENCES} reference images.")
     validate_edit_args(parser, args, paths)
     if args.lora_preset and args.strength != 1:
         parser.error("Acceleration presets require --strength 1 to retain all trained steps.")
@@ -213,6 +221,7 @@ def main() -> None:
         quantize=args.quantize,
         model_path=args.model_path,
         model_config=model_config,
+        compute_precision=ComputePrecision.dtype_for(args.compute_precision),
         lora_paths=args.lora_paths,
         lora_scales=args.lora_scales,
         lora_preset=args.lora_preset,
@@ -243,6 +252,7 @@ def main() -> None:
                 enhance_prompt=args.enhance_prompt,
                 verify=args.verify,
                 verify_retries=args.verify_retries,
+                scheduler=args.scheduler,
             )
             if getattr(image, "verification", None) is not None:
                 print(f"verification: {image.verification}")

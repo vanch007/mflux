@@ -154,8 +154,18 @@ class ModelConfig:
 
     @staticmethod
     @lru_cache
+    def qwen_image_edit_2511() -> "ModelConfig":
+        return AVAILABLE_MODELS["qwen-image-edit-2511"]
+
+    @staticmethod
+    @lru_cache
     def qwen_image_21() -> "ModelConfig":
         return AVAILABLE_MODELS["qwen-image-2.1"]
+
+    @staticmethod
+    @lru_cache
+    def qwen_image_21_controlnet_union() -> "ModelConfig":
+        return AVAILABLE_MODELS["qwen-image-2.1-controlnet-union"]
 
     @staticmethod
     @lru_cache
@@ -572,8 +582,6 @@ AVAILABLE_MODELS = {
             "qwen-edit",
             "qwen-edit-plus",
             "qwen-edit-2509",
-            "qwen-edit-2511",
-            "qwen-image-edit-2511",
         ],
         model_name="Qwen/Qwen-Image-Edit-2509",
         base_model=None,
@@ -583,6 +591,24 @@ AVAILABLE_MODELS = {
         max_sequence_length=None,
         supports_guidance=None,
         requires_sigma_shift=True,
+        sigma_max_shift=0.9,
+        sigma_max_seq_len=8192,
+        sigma_shift_terminal=0.02,
+    ),
+    "qwen-image-edit-2511": ModelConfig(
+        # Same schedule as 2509. Its transformer config sets zero_cond_t: the reference-image tokens are
+        # modulated at timestep 0. Run as a 2509 it blurs the edit and can leave it undone.
+        priority=16,
+        aliases=["qwen-image-edit-2511", "qwen-edit-2511"],
+        model_name="Qwen/Qwen-Image-Edit-2511",
+        base_model=None,
+        controlnet_model=None,
+        custom_transformer_model=None,
+        num_train_steps=None,
+        max_sequence_length=None,
+        supports_guidance=None,
+        requires_sigma_shift=True,
+        transformer_overrides={"zero_cond_t": True},
         sigma_max_shift=0.9,
         sigma_max_seq_len=8192,
         sigma_shift_terminal=0.02,
@@ -815,36 +841,6 @@ AVAILABLE_MODELS = {
         sigma_max_seq_len=8192,
         sigma_shift_terminal=0.02,
     ),
-    "qwen-image-2.1-heretic-8bit": ModelConfig(
-        priority=30,
-        aliases=["qwen-image-2.1-heretic-8bit", "qwen21-heretic-8bit", "vanch007/Qwen-Image-2.1-Heretic-mlx-8bit"],
-        model_name="vanch007/Qwen-Image-2.1-Heretic-mlx-8bit",
-        base_model="qwen-image-2.1",
-        controlnet_model=None,
-        custom_transformer_model=None,
-        num_train_steps=None,
-        max_sequence_length=None,
-        supports_guidance=True,
-        requires_sigma_shift=True,
-        sigma_max_shift=0.9,
-        sigma_max_seq_len=8192,
-        sigma_shift_terminal=0.02,
-    ),
-    "qwen-image-2.1-heretic-4bit": ModelConfig(
-        priority=31,
-        aliases=["qwen-image-2.1-heretic-4bit", "qwen21-heretic-4bit", "vanch007/Qwen-Image-2.1-Heretic-mlx-4bit"],
-        model_name="vanch007/Qwen-Image-2.1-Heretic-mlx-4bit",
-        base_model="qwen-image-2.1",
-        controlnet_model=None,
-        custom_transformer_model=None,
-        num_train_steps=None,
-        max_sequence_length=None,
-        supports_guidance=True,
-        requires_sigma_shift=True,
-        sigma_max_shift=0.9,
-        sigma_max_seq_len=8192,
-        sigma_shift_terminal=0.02,
-    ),
     "qwen-image-2.1-heretic-bf16": ModelConfig(
         priority=32,
         aliases=["qwen-image-2.1-heretic-bf16", "qwen21-heretic-bf16", "vanch007/Qwen-Image-2.1-Heretic-mlx-bf16"],
@@ -860,27 +856,12 @@ AVAILABLE_MODELS = {
         sigma_max_seq_len=8192,
         sigma_shift_terminal=0.02,
     ),
-    "qwen-image-2.1-heretic-hdr-bf16": ModelConfig(
-        priority=32,
-        aliases=["qwen-image-2.1-heretic-hdr-bf16", "qwen21-heretic-hdr-bf16"],
-        model_name="/Users/vanch/models/mlx/Qwen-Image-2.1-Heretic-HDR-mlx-bf16",
-        base_model="qwen-image-2.1",
-        controlnet_model=None,
-        custom_transformer_model=None,
-        num_train_steps=None,
-        max_sequence_length=None,
-        supports_guidance=True,
-        requires_sigma_shift=True,
-        sigma_max_shift=0.9,
-        sigma_max_seq_len=8192,
-        sigma_shift_terminal=0.02,
-    ),
-    "qwen-image-2.1-noctq-hdr-bf16": ModelConfig(
-        priority=32,
-        aliases=["qwen-image-2.1-noctq-hdr-bf16", "qwen21-noctq-hdr-bf16"],
-        model_name="/Users/vanch/models/mlx/Qwen-Image-2.1-NoctQ-HDR-mlx-bf16",
-        base_model="qwen-image-2.1",
-        controlnet_model=None,
+    "qwen-image-2.1-controlnet-union": ModelConfig(
+        priority=31,
+        aliases=["qwen-image-2.1-controlnet-union", "qwen-image-2.1-controlnet", "qwen-2.1-controlnet"],
+        model_name="Qwen/Qwen-Image-2.1",
+        base_model=None,
+        controlnet_model="alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union",
         custom_transformer_model=None,
         num_train_steps=None,
         max_sequence_length=None,

@@ -1,5 +1,7 @@
+import json
 import sys
 
+import mlx.core as mx
 import PIL.Image
 import pytest
 
@@ -53,7 +55,9 @@ def full_argv(tmp_path, ref_png, lora_file):
         "--pid-decode", "--pid-degrade-sigma", "0.2",
         "--lora", str(lora_file), "0.5",
         "-q", "8",
-        "--metadata",
+        "--float32",
+        "--compute-precision", "float16",
+        "--make-conf",
         "--output", str(tmp_path / "out.png"),
     ]  # fmt: skip
 
@@ -95,9 +99,11 @@ def test_main_call_sequence_is_pinned(monkeypatch, tmp_path, ref_png, lora_file,
         "model_config": AVAILABLE_MODELS["z-image"],
         "quantize": 8,
         "model_path": None,
+        "float32": True,
         "lora_paths": [str(lora_file)],
         "lora_scales": [0.5],
         "bake_lora": True,
+        "compute_precision": mx.float16,
     }
     assert model.generate_calls == [expected_generate_call(7, ref_png), expected_generate_call(8, ref_png)]
     assert [img.saves for img in model.images] == [
@@ -108,11 +114,43 @@ def test_main_call_sequence_is_pinned(monkeypatch, tmp_path, ref_png, lora_file,
 
 @pytest.mark.fast
 def test_main_defaults_the_scheduler_only_when_the_flag_is_absent(monkeypatch):
-    # The command's own default lives in main() because it reads sys.argv; an explicit
-    # --scheduler, even the parser default, wins.
+    # An explicit --scheduler, even the generic parser default, wins over the command's own.
     assert run_main(monkeypatch, ["--prompt", "x"]).generate_calls[0]["scheduler"] == "flow_match_euler_discrete"
     FakeZImage.instances.clear()
     assert run_main(monkeypatch, ["--prompt", "x", "--scheduler", "linear"]).generate_calls[0]["scheduler"] == "linear"
+
+
+@pytest.mark.fast
+def test_main_honours_the_equals_spelling_of_scheduler(monkeypatch):
+    # --scheduler=NAME is the same flag as --scheduler NAME.
+    assert run_main(monkeypatch, ["--prompt", "x", "--scheduler=linear"]).generate_calls[0]["scheduler"] == "linear"
+
+
+@pytest.mark.fast
+def test_main_replays_the_scheduler_a_sidecar_records(monkeypatch, tmp_path):
+    # parse_args restores a recorded scheduler from --config-from-conf; main() must not replace it.
+    # Z-Image does not write this key; a hand-edited sidecar, or one Qwen-Image-2.1 wrote, does.
+    sidecar = tmp_path / "prior.metadata.json"
+    sidecar.write_text(json.dumps({"model": "z-image", "prompt": "x", "seed": 7, "scheduler": "linear"}))
+    assert run_main(monkeypatch, ["--config-from-conf", str(sidecar)]).generate_calls[0]["scheduler"] == "linear"
+
+
+@pytest.mark.fast
+def test_main_replays_its_own_sidecar_with_the_command_default_scheduler(monkeypatch, tmp_path):
+    # The sidecar a Z-Image run writes has no scheduler key, so the replay keeps the command's default.
+    sidecar = tmp_path / "prior.metadata.json"
+    sidecar.write_text(json.dumps({"model": "z-image", "prompt": "x", "seed": 7}))
+    model = run_main(monkeypatch, ["--config-from-conf", str(sidecar)])
+    assert model.generate_calls[0]["scheduler"] == "flow_match_euler_discrete"
+
+
+@pytest.mark.fast
+def test_generate_on_parsed_flags_runs_the_command_default_scheduler(monkeypatch):
+    # A script that parses the command's flags and calls generate() gets what the command line runs.
+    args = args_for(monkeypatch, ["--prompt", "x"])
+    model = cli.ZImageCommand.load(args)
+    cli.ZImageCommand.generate(model, args, 7, "x")
+    assert model.generate_calls[0]["scheduler"] == "flow_match_euler_discrete"
 
 
 @pytest.mark.fast

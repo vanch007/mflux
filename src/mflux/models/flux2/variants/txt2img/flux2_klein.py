@@ -35,6 +35,7 @@ class Flux2Klein(nn.Module):
         lora_scales: list[float] | None = None,
         bake_lora: bool = True,
         model_config: ModelConfig | None = None,
+        compute_precision: mx.Dtype | None = None,
     ):
         super().__init__()
         Flux2Initializer.init(
@@ -45,6 +46,7 @@ class Flux2Klein(nn.Module):
             lora_scales=lora_scales,
             bake_lora=bake_lora,
             model_config=model_config or ModelConfig.flux2_klein_4b(),
+            compute_precision=compute_precision,
         )
 
     def generate_image(
@@ -116,6 +118,8 @@ class Flux2Klein(nn.Module):
                     f"Stopping image generation at step {t + 1}/{config.num_inference_steps}"
                 )
 
+        # The predict closure holds the transformer. Delete it so that --low-ram can free the transformer before decode.
+        del predict
         ctx.after_loop(latents)
 
         # 5. Decode latents
@@ -141,6 +145,7 @@ class Flux2Klein(nn.Module):
             generation_time=config.time_steps.format_dict["elapsed"],
             pid_decode=pid_decode,
             pid_degrade_sigma=pid_degrade_sigma,
+            generation_parameters=self.compute_precision.generation_parameters(),
         )
 
     def _encode_prompt_pair(

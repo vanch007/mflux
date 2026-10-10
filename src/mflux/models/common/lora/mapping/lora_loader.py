@@ -28,6 +28,9 @@ class PatternMatch:
 
 
 class LoRALoader:
+    # Under this share of the update kept (LoRASaver._add_overlap), the bake says how to keep all of it.
+    BAKE_WARNING_SHARE = 0.9
+
     @staticmethod
     def load_and_apply_lora(
         lora_mapping: list[LoRATarget],
@@ -36,6 +39,7 @@ class LoRALoader:
         lora_scales: list[float] | None = None,
         role: str | None = None,
         bake_lora: bool = True,
+        dense_weights: dict | None = None,
     ) -> tuple[list[str], list[float]]:
         resolved_paths = LoraResolution.resolve_paths(lora_paths)
         if not resolved_paths:
@@ -69,9 +73,15 @@ class LoRALoader:
 
         if bake_lora:
             print("Baking LoRA weights into the base model for faster inference...")
-            LoRASaver.bake_and_strip_lora(transformer)
+            kept: list[float] = []
+            LoRASaver.bake_and_strip_lora(transformer, dense_weights=dense_weights, kept=kept)
             mx.eval(transformer.parameters())
             print("✅ LoRA weights baked successfully")
+            if kept and kept[0] < LoRALoader.BAKE_WARNING_SHARE:
+                print(
+                    f"⚠️  The baked weights hold {kept[0]:.0%} of the LoRA update; the rest is smaller than "
+                    "their rounding step. Pass --no-bake-lora (bake_lora=False) to apply all of it."
+                )
 
         return resolved_paths, resolved_scales
 

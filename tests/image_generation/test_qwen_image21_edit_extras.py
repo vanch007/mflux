@@ -1,5 +1,7 @@
+import json
 import sys
 from argparse import Namespace
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -11,8 +13,13 @@ from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
 
 from mflux.callbacks.callback_manager import CallbackManager
 from mflux.callbacks.callback_registry import CallbackRegistry
+from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.config import ModelConfig
-from mflux.models.qwen21.cli import qwen21_edit_generate as cli
+from mflux.models.qwen21.cli import (
+    qwen21_edit_generate as cli,
+    qwen21_generate,
+)
+from mflux.models.qwen21.model.qwen21_scheduler import ViggleTurboScheduler
 from mflux.models.qwen21.model.qwen21_text_encoder.grounding import QwenImage21Grounding
 from mflux.models.qwen21.model.qwen21_text_encoder.text_encoder import QwenImage21TextEncoder
 from mflux.models.qwen21.model.qwen21_transformer.qwen21_layout import QwenImage21Layout
@@ -37,6 +44,9 @@ class _FakeTransformer:
     def __call__(self, hidden, text, timestep, layout, cache=None, step_cache=None):
         self.calls.append(float(timestep[0]))
         return mx.ones((1, layout.target_tokens, hidden.shape[-1]))
+
+    def inference_projections(self):
+        return nullcontext()
 
 
 class _FakeVAE:
@@ -78,6 +88,7 @@ def _stub_model(prompts=None):
     model.bits = None
     model.lora_paths = None
     model.lora_scales = None
+    model.compute_precision = ComputePrecision()
 
     def encode(prompt, images):
         if prompts is not None:
@@ -95,9 +106,9 @@ def _source(tmp_path):
     return str(path)
 
 
-def _generate(model, tmp_path, **kwargs):
+def _generate(model, tmp_path, seed=1, **kwargs):
     return model.generate_image(
-        seed=1,
+        seed=seed,
         prompt="edit",
         num_inference_steps=4,
         image_paths=[_source(tmp_path)],
@@ -165,6 +176,228 @@ def test_enhance_prompt_encodes_the_rewrite_and_records_the_original(tmp_path):
     image = _generate(model, tmp_path, enhance_prompt=True)
     assert prompts == ["a detailed edit"]
     assert image.generation_parameters["original_prompt"] == "edit"
+
+
+def test_enhance_prompt_shows_the_rewrite_every_reference_image(tmp_path):
+    # Only the first image used to reach the rewrite, so an instruction about <image2> came back
+    # as "<image2> is not present" (#831).
+    model = _stub_model()
+    seen = []
+
+    def reply(instruction, images, tokens):
+        seen.append((instruction, len(images)))
+        return '{"rewritten_prompt": "a detailed edit"}'
+
+    model._vision_reply = reply
+
+    class _Encoded(Exception):
+        pass
+
+    def stop(prompt, images):
+        raise _Encoded  # the stubbed encoder serves one reference; the rewrite is what this checks
+
+    model._encode_prompt = stop
+    second = tmp_path / "second.png"
+    Image.new("RGBA", (64, 64), (10, 200, 30, 255)).save(second)
+    with pytest.raises(_Encoded):
+        model.generate_image(
+            seed=1,
+            prompt="put the hat from <image2> on <image1>",
+            num_inference_steps=4,
+            image_paths=[_source(tmp_path), str(second)],
+            output_resolution=64,
+            enhance_prompt=True,
+        )
+    instruction, count = seen[0]
+    assert count == 2
+    assert "<image1>, the image to be edited, and the reference image <image2>" in instruction
+
+
+def test_rewrite_prompt_is_public_and_matches_enhance_prompt(tmp_path):
+    prompts = []
+    model = _stub_model(prompts)
+    model._vision_reply = lambda instruction, images, tokens: '{"rewritten_prompt": "a detailed edit"}'
+
+    rewritten = model.rewrite_prompt("edit", [_source(tmp_path)])
+    model.generate_image(
+        seed=1, prompt=rewritten, num_inference_steps=4, image_paths=[_source(tmp_path)], output_resolution=64
+    )
+
+    assert rewritten == "a detailed edit"
+    assert prompts == ["a detailed edit"]
+
+
+def test_rewrite_prompt_raises_when_it_cannot_rewrite(tmp_path):
+    # enhance_prompt falls back to the instruction; the public method says so instead, or the caller
+    # would generate from the terse instruction thinking it was rewritten.
+    model = _stub_model()
+    model._vision_reply = lambda instruction, images, tokens: "no json here"
+    with pytest.raises(ValueError, match="could not be parsed"):
+        model.rewrite_prompt("edit", [_source(tmp_path)])
+
+    released = _stub_model()
+    released.text_encoder = None
+    with pytest.raises(RuntimeError, match="released by the memory saver"):
+        released.rewrite_prompt("edit", [_source(tmp_path)])
+
+
+def test_enhance_prompt_falls_back_when_the_text_encoder_was_released(tmp_path):
+    prompts = []
+    model = _stub_model(prompts)
+    model.text_encoder = None
+    _generate(model, tmp_path, enhance_prompt=True)
+    assert prompts == ["edit"]
+
+
+def test_scheduler_reaches_the_edit_schedule(tmp_path):
+    # The CLI checked --scheduler viggle_turbo and then never passed it on (#831).
+    model = _stub_model()
+    schedulers = []
+
+    class _SchedulerRecorder(_Recorder):
+        def call_before_loop(self, seed, prompt, latents, config, **kwargs):
+            schedulers.append(type(config.scheduler).__name__)
+
+    model.callbacks.register(_SchedulerRecorder())
+    model.generate_image(
+        seed=1,
+        prompt="edit",
+        num_inference_steps=6,
+        image_paths=[_source(tmp_path)],
+        output_resolution=64,
+        scheduler="viggle_turbo",
+    )
+
+    assert schedulers == ["ViggleTurboScheduler"]
+
+
+def test_cli_passes_the_scheduler_to_the_edit(tmp_path, monkeypatch):
+    calls = []
+
+    class _Model:
+        def __init__(self, **kwargs):
+            self.callbacks = CallbackRegistry()
+
+        def generate_image(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(save=lambda *args, **kwargs: None, verification=None)
+
+    monkeypatch.setattr(cli, "QwenImage21Edit", _Model)
+    monkeypatch.setattr(cli.CallbackManager, "register_callbacks", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["mflux-generate-qwen-2.1-edit", "--prompt", "edit", "--image-paths", _source(tmp_path), "--steps", "6",
+         "--scheduler", "viggle_turbo", "--output", str(tmp_path / "out.png")],
+    )  # fmt: skip
+
+    cli.main()
+
+    assert calls and calls[0]["scheduler"] == "viggle_turbo"
+
+
+@pytest.mark.parametrize("scheduler", ["linear", "viggle_turbo"])
+def test_edit_records_a_scheduler_other_than_linear(tmp_path, scheduler):
+    # The schedule changes the image, so --config-from-conf has to find it in the sidecar.
+    image = _stub_model().generate_image(
+        seed=1,
+        prompt="edit",
+        num_inference_steps=6,
+        image_paths=[_source(tmp_path)],
+        output_resolution=64,
+        scheduler=scheduler,
+    )
+
+    assert image.generation_parameters.get("scheduler") == (None if scheduler == "linear" else scheduler)
+
+
+@pytest.mark.parametrize("command", [cli, qwen21_generate])
+def test_config_from_conf_replays_the_scheduler(tmp_path, monkeypatch, command):
+    sidecar = tmp_path / "image.metadata.json"
+    recorded = {
+        "prompt": "edit",
+        "seed": 1,
+        "steps": 6,
+        "scheduler": "viggle_turbo",
+        "image_paths": [_source(tmp_path)],
+    }
+    sidecar.write_text(json.dumps(recorded))
+
+    monkeypatch.setattr(sys, "argv", ["mflux", "--config-from-conf", str(sidecar)])
+    assert command.build_parser().parse_args().scheduler == "viggle_turbo"
+    monkeypatch.setattr(sys, "argv", ["mflux", "--config-from-conf", str(sidecar), "--scheduler", "linear"])
+    assert command.build_parser().parse_args().scheduler == "linear"
+
+
+def test_edit_rejects_a_scheduler_its_loop_cannot_run(tmp_path):
+    # The loop takes Euler steps over the sigmas and never calls step(); only linear and viggle_turbo
+    # are that update, so anything else would run the wrong sampler and record it as run.
+    with pytest.raises(ValueError, match="linear or viggle_turbo"):
+        _generate(_stub_model(), tmp_path, scheduler="flow_match_euler_discrete")
+
+
+@pytest.mark.parametrize("command", [cli, qwen21_generate])
+@pytest.mark.parametrize("recorded", ["nope", "os.path.Thing", 5])
+def test_config_from_conf_rejects_an_unknown_scheduler(tmp_path, monkeypatch, capsys, command, recorded):
+    # Before the model loads, and without importing a module the sidecar names; --scheduler still can.
+    sidecar = tmp_path / "image.metadata.json"
+    sidecar.write_text(
+        json.dumps({"prompt": "edit", "seed": 1, "steps": 6, "scheduler": recorded, "image_paths": [_source(tmp_path)]})
+    )
+    monkeypatch.setattr(sys, "argv", ["mflux", "--config-from-conf", str(sidecar)])
+    with pytest.raises(SystemExit) as exc:
+        command.build_parser().parse_args()
+    assert exc.value.code == 2
+    assert "Pass --scheduler" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("given", "named"),
+    [([], "replayed from --config-from-conf"), (["--scheduler", "viggle_turbo"], "--scheduler viggle_turbo")],
+)
+def test_viggle_turbo_step_error_names_where_the_scheduler_came_from(tmp_path, monkeypatch, capsys, given, named):
+    sidecar = tmp_path / "image.metadata.json"
+    sidecar.write_text(
+        json.dumps(
+            {"prompt": "edit", "seed": 1, "steps": 6, "scheduler": "viggle_turbo", "image_paths": [_source(tmp_path)]}
+        )
+    )
+    monkeypatch.setattr(sys, "argv", ["mflux", "--config-from-conf", str(sidecar), "--steps", "20", *given])
+    parser = cli.build_parser()
+    args = parser.parse_args()
+    with pytest.raises(SystemExit):
+        ViggleTurboScheduler.check_args(parser, args)
+    assert named in capsys.readouterr().err
+
+
+def test_rewrite_prompt_raises_for_an_empty_prompt(tmp_path):
+    with pytest.raises(ValueError, match="empty"):
+        _stub_model().rewrite_prompt("   ", [_source(tmp_path)])
+
+
+def test_rewrite_request_names_each_reference():
+    assert "Look at <image1>, the image to be edited." in QwenImage21Grounding.rewrite_request("x", 1)
+    assert "and the reference image <image2>." in QwenImage21Grounding.rewrite_request("x", 2)
+    assert "and the reference images <image2>, <image3>." in QwenImage21Grounding.rewrite_request("x", 3)
+
+
+def test_rewrite_prompt_takes_at_most_ten_references():
+    # generate_image refuses an eleventh reference, so a rewrite that names <image11> could not be used.
+    with pytest.raises(ValueError, match="at most 10"):
+        _stub_model().rewrite_prompt("edit", ["unread.png"] * 11)
+
+
+def test_image_paths_take_in_memory_images(tmp_path):
+    # Images passed directly work like paths, also with strength < 1, and the metadata records a
+    # placeholder instead of the object's repr, which carries a memory address (#831).
+    model = _stub_model()
+    source = Image.new("RGBA", (64, 64), (*SOURCE_RGB, 255))
+
+    image = model.generate_image(
+        seed=1, prompt="edit", num_inference_steps=4, image_paths=[source], output_resolution=64, strength=0.5
+    )
+
+    assert image.image_paths == ["<in-memory image>"]
 
 
 def test_enhance_prompt_falls_back_on_an_unparseable_reply(tmp_path):
@@ -337,6 +570,31 @@ def test_step_cache_reuses_the_extract_step_on_an_unchanged_signal():
     np.testing.assert_allclose(np.array(second), np.array(first), rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize(("steps", "strength", "skips"), [(6, 1.0, False), (10, 1.0, True), (12, 0.75, False)])
+def test_step_cache_leaves_a_short_run_alone(tmp_path, steps, strength, skips):
+    # Skipping steps out of the six viggle_turbo ones changed the image ~4x more than baking the LoRA (#835).
+    model = _stub_model()
+    caches = []
+
+    def record(hidden, text, timestep, layout, cache=None, step_cache=None):
+        caches.append(step_cache)
+        return mx.ones((1, layout.target_tokens, hidden.shape[-1]))
+
+    model.transformer = type("_Transformer", (_FakeTransformer,), {"__call__": staticmethod(record)})()
+    image = model.generate_image(
+        seed=1,
+        prompt="edit",
+        num_inference_steps=steps,
+        image_paths=[_source(tmp_path)],
+        output_resolution=64,
+        strength=strength,
+        use_step_cache=True,
+    )
+
+    assert all(isinstance(cache, StepCache) == skips for cache in caches)
+    assert ("step_cache_threshold" in image.generation_parameters) == skips
+
+
 def test_step_cache_recomputes_once_the_signal_accumulates():
     cache = StepCache(0.1)
     cache.store(mx.zeros((1, 2, 2)), mx.ones((1, 2, 2)))
@@ -365,25 +623,31 @@ def test_generation_head_is_optional_when_loading():
         )
 
 
-def test_generation_head_stays_on_disk_until_first_use(tmp_path):
-    from mlx import nn
-
-    from mflux.models.qwen21.qwen21_initializer import Qwen21Initializer
-    from mflux.models.qwen21.weights.qwen_image21_weight_definition import QwenImage21WeightDefinition
-
-    path = str(tmp_path / "head.safetensors")
-    mx.save_safetensors(path, {"lm_head": mx.ones((1024, 4096)), "embed": mx.ones((1024, 4096))})
-    mx.clear_cache()
-    weights = mx.load(path)
-    module = nn.Module()
-    module.lm_head = nn.Linear(4096, 1024, bias=False)
-    module.embed = nn.Linear(4096, 1024, bias=False)
-    module.lm_head.weight, module.embed.weight = weights.pop("lm_head"), weights.pop("embed")
-    before = mx.get_active_memory()
-    Qwen21Initializer._materialize("text_encoder", module, QwenImage21WeightDefinition)
-    assert mx.get_active_memory() - before < 20e6  # the 16 MB embed only, not the head
-    mx.eval(module.lm_head(mx.ones((1, 4096))))  # first use reads it from disk
-    assert mx.get_active_memory() - before >= 32e6
+def test_vision_replies_are_reused_across_seeds(tmp_path):
+    model = _stub_model()
+    calls = []
+    model.processor = type(
+        "Processor",
+        (),
+        {
+            "__call__": staticmethod(
+                lambda text, images, return_tensors: {
+                    "input_ids": np.zeros((1, 3), np.int32),
+                    "pixel_values": np.zeros((4, 8)),
+                    "image_grid_thw": [[1, 2, 2]],
+                }
+            ),
+            "tokenizer": SimpleNamespace(decode=lambda ids: '[{"bbox_2d": [0, 0, 500, 1000]}]'),
+            "image_processor": SimpleNamespace(size={"shortest_edge": 0, "longest_edge": 1e12}),
+        },
+    )()
+    model.text_encoder = SimpleNamespace(generate=lambda *a, **k: calls.append(1) or [1])
+    for seed in (1, 2):
+        _generate(model, tmp_path, auto_mask="the left half", seed=seed)
+    assert len(calls) == 1
+    other = Image.new("RGBA", (64, 64), (0, 0, 255, 255))
+    model._vision_reply("locate", [other], 64)
+    assert len(calls) == 2  # a different image is a new question
 
 
 def test_grounding_parse_bbox_reads_0_1000_coordinates():
@@ -403,6 +667,19 @@ def test_grounding_parse_rewrite_and_verification():
     verdict = '{"instruction_applied": true, "outside_unchanged": false}'
     assert QwenImage21Grounding.parse_verification(verdict) == (True, False)
     assert QwenImage21Grounding.parse_verification("no verdict") is None
+    # the plain-language fallback (no parseable JSON) ignores spacing
+    assert QwenImage21Grounding.parse_verification('"instruction_applied":true, "outside_unchanged" :true') == (
+        True,
+        True,
+    )
+    assert QwenImage21Grounding.parse_verification("instruction_applied: false, unchanged: true") == (False, True)
+    # a field that only ends in applied or unchanged is not the verdict
+    for reply in (
+        "instruction_applied: false, partially_applied: true, outside_unchanged: true",
+        "instruction_applied: false, not_applied: true, outside_unchanged: true",
+    ):
+        assert QwenImage21Grounding.parse_verification(reply) == (False, True)
+    assert QwenImage21Grounding.parse_verification("instruction_applied: true, not_unchanged: true") == (True, False)
 
 
 def test_grounding_masks():

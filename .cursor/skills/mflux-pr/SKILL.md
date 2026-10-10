@@ -17,6 +17,14 @@ description: Make a clean PR in mflux (inspect diff, quick verification, commit,
 - **Always ask for permission** before pushing to the remote repository.
 - If `gh` isn’t available, fall back to the GitHub web UI (or stop and ask).
 
+## PR body and release note (required)
+
+The `release-note` CI check fails the PR if the body has no complete release-note block.
+
+Use the `mflux-pr-docs` skill to write the PR body. That skill writes the `What` section and the release-note block, runs the CI check, and gets the approval of the developer.
+
+If the check fails on an open PR, use the `mflux-pr-docs` skill again. It edits the body of the open PR. The check runs again on an edit. You do not need a new commit.
+
 ## Pre-merge checklist (model port PRs)
 
 Use after the core port lands and you are polishing for merge. For the full **integration surfaces** tick list (LoRA key formats, save routing, tokenizer edge cases, etc. learned from past closed PRs), see `mflux-model-porting` → *Integration surfaces checklist*.

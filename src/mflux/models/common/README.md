@@ -19,6 +19,7 @@ This README covers stable, shared patterns. For model-specific usage, see each m
 - [Metadata inspection](#metadata-inspection)
 - [PiD pixel-diffusion decode](#pid-pixel-diffusion-decode)
 - [Step reuse (step cache)](#step-reuse-step-cache)
+- [Float16 compute (Apple M1 family)](#float16-compute-apple-m1-family)
 - [Resource and inspection options](#resource-and-inspection-options)
 - [MLX cache limit](#mlx-cache-limit)
 - [Cache locations](#cache-locations)
@@ -215,7 +216,7 @@ image.save("prompt_file.png")
 
 ## LoRA basics
 
-By default, LoRA and LoKr weights are **baked** into the base model after load (one-time merge) so inference uses a single matmul per layer. With `--quantize`, adapters are merged into dequantized weights and the result is re-quantized (same as baking into a dense model, then quantizing that layer). Use `--no-bake-lora` to keep runtime adapter layers (for example if you change scales programmatically without reloading).
+By default, LoRA and LoKr weights are **baked** into the base model after load (one-time merge) so inference uses a single matmul per layer. With `--quantize` on FLUX, FLUX.2, Qwen-Image, Krea 2 and Z-Image, a checkpoint that stores full-precision weights gets the adapter added to those weights, in float32, before they are quantized. Elsewhere, and whenever the checkpoint is already quantized, the adapter is merged into the dequantized weights and the result is re-quantized. On that route, the bake re-quantizes each layer below 8 bits at q8. A LoRA on a saved q4 checkpoint thus gives q8 layers, while `-q 4` on a full-precision checkpoint keeps them at q4. A weak adapter at a low scale loses part of its effect that way: one Z-Image LoRA at scale 0.5 came out at 80% of its strength on q8 ([#814](https://github.com/mflux-community/mflux/issues/814)). A bfloat16 weight rounds a small update the same way: the Viggle turbo LoRA for Qwen-Image-2.1 keeps 66% of its update baked into bfloat16 and 42% on `-q 8`. The bake prints the share of the update it kept when that is under 90%; layers with a LoKr adapter are left out of that count. Use `--no-bake-lora` to keep runtime adapter layers: they apply the adapter in full on any checkpoint, they cost speed and memory, and they let you change scales programmatically without reloading.
 
 ```sh
 mflux-generate-z-image-turbo \
@@ -445,13 +446,13 @@ for seed in seeds:
 
 ## Metadata reuse
 
-Run a generation with `--metadata` to emit a metadata sidecar next to the image, then reuse those parameters in a follow-up run. The sidecar filename uses the `.metadata.json` suffix:
+Run a generation with `--make-conf` to write a JSON sidecar of the generation parameters next to the image. Then use those parameters again in a subsequent run. The sidecar filename uses the `.metadata.json` suffix. To stop the image from holding embedded metadata (EXIF), add `--no-exif`. The old names `--metadata`, `--no-metadata` and `--config-from-metadata` continue to work as aliases:
 
 ```sh
 mflux-generate-z-image-turbo \
   --model z-image-turbo \
   --steps 9 \
-  --metadata \
+  --make-conf \
   --output ./image.png
 ```
 
@@ -459,11 +460,11 @@ mflux-generate-z-image-turbo \
 mflux-generate-z-image-turbo \
   --model z-image-turbo \
   --steps 9 \
-  --config-from-metadata ./image.metadata.json \
+  --config-from-conf ./image.metadata.json \
   --prompt "Same composition, warmer light"
 ```
 
-Anything the sidecar recorded is restored — model, prompt and negative prompt, seed, steps, guidance, quantization, dimensions, LoRAs, and the init images of the edit CLIs — and anything named on the command line wins over it, option by option. Since the sidecar can supply the init images, `mflux-generate-qwen-edit` and `mflux-generate-flux2-edit` accept `--config-from-metadata` on its own, without `--image-paths`.
+Anything the sidecar recorded is restored — model, prompt and negative prompt, seed, steps, guidance, quantization, dimensions, LoRAs, and the init images of the edit CLIs — and anything named on the command line wins over it, option by option. Since the sidecar can supply the init images, `mflux-generate-qwen-edit` and `mflux-generate-flux2-edit` accept `--config-from-conf` on its own, without `--image-paths`.
 
 <details>
 <summary>Python API</summary>
@@ -544,13 +545,13 @@ mflux-generate-z-image-turbo \
 
 **On Ideogram 4**, a plain-text prompt can trip the model's own safety filter and return a blank page. That happens on a normal VAE decode too — it is Ideogram's behaviour, not PiD's. Use a structured JSON caption.
 
-Metadata records the PiD flags, so `--config-from-metadata` reproduces a PiD run. `config.height/width` stay the *generation* dimensions, which is what reproduces the run — the file on disk is 4× larger.
+Metadata records the PiD flags, so `--config-from-conf` reproduces a PiD run. `config.height/width` stay the *generation* dimensions, which is what reproduces the run — the file on disk is 4× larger.
 
 ---
 
 ## Step reuse (step cache)
 
-Commands that support it take `--step-cache-ratio` (TeaCache-style step reuse). On that fraction of denoise steps the transformer is skipped and the previous step's prediction is reused, while the scheduler still takes its normal step. The skipped steps are the ones whose timestep signal changes least. The first and last 10% of the run always run, and runs under 10 steps are unaffected, so this only pays off on models sampled for many steps. It trades a little detail for speed: the ratio is recorded in image metadata and replayed by `--config-from-metadata`. Check `mflux-capabilities` for the commands that honor it; today that is `mflux-generate-qwen-2.1`.
+Commands that support it take `--step-cache-ratio` (TeaCache-style step reuse). On that fraction of denoise steps the transformer is skipped and the previous step's prediction is reused, while the scheduler still takes its normal step. The skipped steps are the ones whose timestep signal changes least. The first and last 10% of the run always run, and runs under 10 steps are unaffected, so this only pays off on models sampled for many steps. It trades a little detail for speed: the ratio is recorded in image metadata and replayed by `--config-from-conf`. Check `mflux-capabilities` for the commands that honor it; today that is `mflux-generate-qwen-2.1`.
 
 ```sh
 mflux-generate-qwen-2.1 --prompt "a lighthouse at dusk" --steps 40 --step-cache-ratio 0.25
@@ -572,6 +573,56 @@ for t in config.time_steps:
 ```
 
 Pass `generation_parameters=StepCache.generation_parameters(step_cache_ratio)` to `ImageUtil.to_image` so the ratio lands in metadata. Samplers that keep their own history across steps (multistep solvers) need a review before reuse is enabled, and each model should be quality-checked against its uncached output.
+
+</details>
+
+---
+
+## Float16 compute (Apple M1 family)
+
+`--compute-precision float16` runs the inside of the attention and feed-forward layers in float16. The residual stream, the AdaLN modulation, the norms between those layers, the text encoder and the VAE keep the model's own precision. It is meant for GPUs without native bfloat16, the Apple M1 family, where MLX's matmul and attention kernels are fastest in float16. Without the flag nothing changes. With it the image changes slightly for the same seed, so the image metadata records the flag and `--config-from-conf` replays it. Commands that support it: `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-generate-qwen-2.1`, `mflux-generate-qwen-2.1-edit` and `mflux-generate-qwen-2.1-controlnet` (`mflux-capabilities` lists them).
+
+```sh
+mflux-generate-z-image-turbo --prompt "A puffin standing on a cliff" --steps 9 -q 4 --compute-precision float16
+```
+
+Measured on an M1 Max (64 GB) at 1024×1024. PSNR compares each image with the one the same seed gives without the flag (three seeds; two for Qwen-Image 2.1):
+
+| model | s/step, without → with | total time | PSNR |
+|---|---|---:|---|
+| FLUX.2 klein 4B, `-q 4` | 6.8 → 5.0 | −22% | 38–48 dB |
+| Z-Image Turbo, `-q 4` | 10.7 → 7.5 | −27% | 36–37 dB |
+| FLUX.2 klein 9B, unquantized | 11.6 → 10.5 | −4% to −12% | 30–43 dB |
+| Qwen-Image 2.1 edit, 6-step LoRA, unquantized | 12.6 → 10.8 | −12% | 44–48 dB |
+
+The gain depends on the chip. Reported in the pull request discussion: an M2 Ultra ran 18% to 22% faster in total, and an M5 Max showed no change. On an M4 Max (36 GB), Z-Image Turbo `-q 4` took 4% to 6% less time for each step. FLUX.2 klein 9B KV and Qwen-Image 2.1 changed by less than the run-to-run noise.
+
+`--float32` exists only on the Z-Image commands. The FLUX.2 and Qwen-Image 2.1 commands have no `--float32` option.
+
+<details>
+<summary>Python API</summary>
+
+```python
+import mlx.core as mx
+
+from mflux.models.z_image import ZImageTurbo
+
+model = ZImageTurbo(quantize=4, compute_precision=mx.float16)
+image = model.generate_image(
+    seed=42,
+    prompt="A puffin standing on a cliff",
+    num_inference_steps=9,
+)
+image.save("puffin.png")
+```
+
+`Flux2Klein`, `Flux2KleinEdit`, `QwenImage21` and `QwenImage21Edit` take the same `compute_precision` argument. The weights of those layers are cast in place when the model loads, after quantization and LoRA. For that reason `save_model()` raises an error on a model built with `compute_precision`: build the model without it to save it.
+</details>
+
+<details>
+<summary>Adding it to a model</summary>
+
+The logic lives in `mflux.models.common.compute_precision.ComputePrecision`. Give each attention and feed-forward module a `self.compute_precision = ComputePrecision()`, pass its input through `to_compute` and its output through `to_stream` together with the input dtype, and add a transformer method that calls `precision.apply(self, (YourAttention, YourFeedForward))`. The initializer calls that method after weights and LoRA are applied, so quantization scales and LoRA factors are cast too. It also stores the precision as `model.compute_precision`, and `generate_image` passes `generation_parameters=self.compute_precision.generation_parameters()` to `ImageUtil.to_image` so the image metadata records it. If the activations inside a module exceed the float16 range, as in Z-Image, scale them with `shrink(x, headroom)` and pass the same headroom to `to_stream`. Then add `parser.add_compute_precision_arguments()` to the command.
 
 </details>
 

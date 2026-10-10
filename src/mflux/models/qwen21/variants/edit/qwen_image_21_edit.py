@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import shutil
@@ -11,6 +12,7 @@ from PIL import Image
 from mflux.cli.defaults.defaults import MODEL_INFERENCE_STEPS
 from mflux.models.common.config import ModelConfig
 from mflux.models.common.config.config import Config
+from mflux.models.common.step_cache.step_cache import StepCache as StepReuse
 from mflux.models.common.vae.vae_util import VAEUtil
 from mflux.models.common.weights.saving.model_saver import ModelSaver
 from mflux.models.qwen21.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
@@ -29,6 +31,12 @@ from mflux.utils.image_util import ImageUtil
 logger = logging.getLogger(__name__)
 
 
+MAX_REFERENCES = 10
+# The edit loop takes Euler steps over the scheduler's sigmas and never calls its step(), which is
+# the right update for these two only.
+EDIT_SCHEDULERS = ("linear", "viggle_turbo", "qwen_turbo")
+
+
 class QwenImage21Edit(nn.Module):
     lora_preset: str | None = None
     bake_lora: bool = False
@@ -42,10 +50,20 @@ class QwenImage21Edit(nn.Module):
         lora_scales: list[float] | None = None,
         lora_preset: str | None = None,
         bake_lora: bool = False,
+        compute_precision: mx.Dtype | None = None,
     ):
         super().__init__()
         config = Qwen21LoRA.configure(model_config or ModelConfig.qwen_image_21(), lora_preset)
-        QwenImage21Initializer.init(self, config, quantize, model_path)
+        QwenImage21Initializer.init(
+            self,
+            config,
+            quantize,
+            model_path,
+            lora_paths,
+            lora_scales,
+            bake_lora,
+            compute_precision=compute_precision,
+        )
         Qwen21LoRA.apply(self, lora_paths, lora_scales, lora_preset, bake_lora, reference=True)
 
     def generate_image(
@@ -57,7 +75,7 @@ class QwenImage21Edit(nn.Module):
         width: int | None = None,
         guidance: float = 1.0,
         negative_prompt: str | None = None,
-        image_paths: list[str | Path] | None = None,
+        image_paths: list[str | Path | Image.Image] | None = None,
         output_resolution: int = 1024,
         use_kv_cache: bool = True,
         scheduler: str | None = None,
@@ -71,6 +89,7 @@ class QwenImage21Edit(nn.Module):
         enhance_prompt: bool = False,
         verify: bool = False,
         verify_retries: int = 0,
+        scheduler: str = "linear",
     ) -> GeneratedImage:
         if num_inference_steps is None:
             num_inference_steps = (
@@ -85,8 +104,9 @@ class QwenImage21Edit(nn.Module):
         if self.lora_preset and strength != 1.0:
             raise ValueError("Acceleration presets require strength=1 to retain all trained steps.")
         image_paths = image_paths or []
-        if len(image_paths) > 10:
-            raise ValueError("Qwen-Image-2.1 supports at most 10 reference images.")
+        QwenImage21Edit._check_reference_count(image_paths)
+        if scheduler not in EDIT_SCHEDULERS:
+            raise ValueError(f"The Qwen-Image-2.1 edit runs the linear or viggle_turbo schedule, got {scheduler!r}.")
         QwenImage21LatentCreator.validate_resolution(output_resolution)
         QwenImage21LatentCreator.validate_resolution(reference_resolution)
         if not 0 < strength <= 1:
@@ -118,12 +138,13 @@ class QwenImage21Edit(nn.Module):
             scheduler=scheduler,
             # strength < 1 skips the first (1 - strength) of the schedule, starting from
             # the source noised to that sigma instead of pure noise
-            image_path=str(image_paths[0]) if strength < 1 else None,
+            image_path=QwenImage21Edit._recorded_path(image_paths[0]) if strength < 1 else None,
             image_strength=1 - strength if strength < 1 else None,
+            scheduler=scheduler,
         )
         original_prompt = prompt
         if enhance_prompt:
-            prompt = self._rewrite_prompt(prompt, source)
+            prompt = self._rewrite_prompt(prompt, images)
             logger.info("enhance_prompt: %r -> %r", original_prompt, prompt)
         # White = repaint, black = preserve; drives per-step latent blending and a final pixel composite.
         inpaint_mask = (
@@ -180,44 +201,51 @@ class QwenImage21Edit(nn.Module):
         negative_cache = [] if use_kv_cache else None
         if use_step_cache and not use_kv_cache:
             logger.warning("use_step_cache needs use_kv_cache; running without step skipping")
+        # A short run has no steps to spare: on the six viggle_turbo steps, skipping changed the image
+        # about four times as much as baking the turbo LoRA did. The shared step reuse has the same floor.
+        steps_run = config.num_inference_steps - config.init_time_step
+        if use_step_cache and steps_run < StepReuse.MIN_STEPS:
+            logger.warning(f"use_step_cache skips nothing in a run under {StepReuse.MIN_STEPS} steps")
+            use_step_cache = False
         step_cache = StepCache(step_cache_threshold) if use_step_cache and use_kv_cache else None
         negative_step_cache = (
             StepCache(step_cache_threshold) if step_cache is not None and negative is not None else None
         )
         ctx = self.callbacks.start(seed=seed, prompt=prompt, config=config)
         ctx.before_loop(latents)
-        for t in config.time_steps:
-            try:
-                model_input = mx.concatenate([condition_latents, latents], axis=1) if conditions else latents
-                # Match diffusers: cast the 0..1000 timestep before dividing by 1000.
-                timestep = (config.scheduler.sigmas[t : t + 1] * 1000).astype(latents.dtype) / 1000
-                noise = self.transformer(model_input, prompt_embeds, timestep, layout, cache, step_cache=step_cache)
-                if negative is not None:
-                    uncond = self.transformer(
-                        model_input,
-                        negative[0],
-                        timestep,
-                        negative_layout,
-                        negative_cache,
-                        step_cache=negative_step_cache,
-                    )
-                    noise = uncond + guidance * (noise - uncond)
-                # The upstream Euler update accumulates in fp32 and casts back afterward.
-                sigma = config.scheduler.sigmas
-                latents = (latents.astype(mx.float32) + (sigma[t + 1] - sigma[t]) * noise.astype(mx.float32)).astype(
-                    latents.dtype
-                )
-                if blend_mask is not None:
-                    # the state now sits at sigma_{t+1}; pin unmasked tokens to the source there
-                    noised = blend_source + sigma[t + 1] * (noise_init - blend_source)
-                    latents = (blend_mask * latents + (1 - blend_mask) * noised).astype(latents.dtype)
-                mx.eval(latents)
-                ctx.in_loop(t, latents)
-            except KeyboardInterrupt:  # noqa: PERF203
-                ctx.interruption(t, latents)
-                raise StopImageGenerationException(
-                    f"Stopping image generation at step {t + 1}/{num_inference_steps}"
-                ) from None
+        with self.transformer.inference_projections():
+            for t in config.time_steps:
+                try:
+                    model_input = mx.concatenate([condition_latents, latents], axis=1) if conditions else latents
+                    # Match diffusers: cast the 0..1000 timestep before dividing by 1000.
+                    timestep = (config.scheduler.sigmas[t : t + 1] * 1000).astype(latents.dtype) / 1000
+                    noise = self.transformer(model_input, prompt_embeds, timestep, layout, cache, step_cache=step_cache)
+                    if negative is not None:
+                        uncond = self.transformer(
+                            model_input,
+                            negative[0],
+                            timestep,
+                            negative_layout,
+                            negative_cache,
+                            step_cache=negative_step_cache,
+                        )
+                        noise = uncond + guidance * (noise - uncond)
+                    # The upstream Euler update accumulates in fp32 and casts back afterward.
+                    sigma = config.scheduler.sigmas
+                    latents = (
+                        latents.astype(mx.float32) + (sigma[t + 1] - sigma[t]) * noise.astype(mx.float32)
+                    ).astype(latents.dtype)
+                    if blend_mask is not None:
+                        # the state now sits at sigma_{t+1}; pin unmasked tokens to the source there
+                        noised = blend_source + sigma[t + 1] * (noise_init - blend_source)
+                        latents = (blend_mask * latents + (1 - blend_mask) * noised).astype(latents.dtype)
+                    mx.eval(latents)
+                    ctx.in_loop(t, latents)
+                except KeyboardInterrupt:  # noqa: PERF203
+                    ctx.interruption(t, latents)
+                    raise StopImageGenerationException(
+                        f"Stopping image generation at step {t + 1}/{num_inference_steps}"
+                    ) from None
         ctx.after_loop(latents)
         del cache, negative_cache
         unpacked = QwenImage21LatentCreator.unpack_latents(latents, height, width).astype(mx.float32)
@@ -237,9 +265,12 @@ class QwenImage21Edit(nn.Module):
             "independent_edit_noise": independent_edit_noise,
             "noise_seed": noise_seed,
             "use_step_cache": use_step_cache,
+            **self.compute_precision.generation_parameters(),
         }
         if strength < 1:
             parameters["strength"] = strength
+        if scheduler != "linear":
+            parameters["scheduler"] = scheduler
         if auto_mask is not None:
             parameters["auto_mask"] = auto_mask
         if use_step_cache:
@@ -255,7 +286,7 @@ class QwenImage21Edit(nn.Module):
             lora_paths=self.lora_paths,
             lora_scales=self.lora_scales,
             generation_time=config.time_steps.format_dict["elapsed"],
-            image_paths=image_paths,
+            image_paths=[QwenImage21Edit._recorded_path(path) for path in image_paths],
             negative_prompt=negative_prompt,
             generation_parameters=parameters,
         )
@@ -287,6 +318,7 @@ class QwenImage21Edit(nn.Module):
                 strength=strength,
                 use_step_cache=use_step_cache,
                 step_cache_threshold=step_cache_threshold,
+                scheduler=scheduler,
             )
             # the retry got the resolved mask and prompt; record how they were derived
             retry_image.generation_parameters.update(
@@ -339,20 +371,43 @@ class QwenImage21Edit(nn.Module):
         logger.info("auto_mask %r resolved to bbox %s", auto_mask, tuple(round(v, 3) for v in bbox))
         return QwenImage21Grounding.rasterize_mask(bbox, (width, height))
 
-    def _rewrite_prompt(self, prompt: str, source: Image.Image) -> str:
+    def rewrite_prompt(self, prompt: str, images: list[str | Path | Image.Image]) -> str:
+        # The rewrite enhance_prompt=True runs, for a caller who wants to read or change it first and
+        # then pass it as the prompt with enhance_prompt=False (#831). Unlike enhance_prompt, it raises
+        # when it can't rewrite: handing back the terse instruction would pass for a rewrite.
+        if not images:
+            raise ValueError("rewrite_prompt needs at least one reference image.")
+        QwenImage21Edit._check_reference_count(images)
+        return self._rewritten(prompt, [open_oriented(image).convert("RGBA") for image in images])
+
+    @staticmethod
+    def _check_reference_count(image_paths: list) -> None:
+        if len(image_paths) > MAX_REFERENCES:
+            raise ValueError(f"Qwen-Image-2.1 supports at most {MAX_REFERENCES} reference images.")
+
+    @staticmethod
+    def _recorded_path(image: str | Path | Image.Image) -> str:
+        # What the metadata records for a reference: its path, or a placeholder for an image passed in memory.
+        return str(image) if isinstance(image, (str, Path)) else "<in-memory image>"
+
+    def _rewrite_prompt(self, prompt: str, images: list[Image.Image]) -> str:
         # Official serving recipe: rewrite a terse instruction into a detailed description
         # before encoding. Best-effort: any failure falls back to the original instruction.
         if not prompt or not prompt.strip():
             return prompt
         try:
-            reply = self._vision_reply(QwenImage21Grounding.REWRITE_PROMPT.format(instruction=prompt), [source], 256)
+            return self._rewritten(prompt, images)
         except Exception as exc:  # noqa: BLE001
             logger.warning("enhance_prompt failed (%s); using the original", exc)
             return prompt
+
+    def _rewritten(self, prompt: str, images: list[Image.Image]) -> str:
+        if not prompt or not prompt.strip():
+            raise ValueError("There is no instruction to rewrite: the prompt is empty.")
+        reply = self._vision_reply(QwenImage21Grounding.rewrite_request(prompt, len(images)), images, 384)
         rewritten = QwenImage21Grounding.parse_rewrite(reply)
         if rewritten is None:
-            logger.warning("enhance_prompt could not parse the rewrite reply; using the original")
-            return prompt
+            raise ValueError(f"The rewrite reply could not be parsed: {reply[:120]!r}")
         return rewritten
 
     def _verify_output(self, instruction: str, original: Image.Image, output: Image.Image) -> dict:
@@ -367,6 +422,12 @@ class QwenImage21Edit(nn.Module):
 
     def _vision_reply(self, instruction: str, images: list[Image.Image], max_new_tokens: int) -> str:
         # Greedy chat reply from the in-memory Qwen3-VL over small copies of the images.
+        # Greedy decoding is deterministic, so a multi-seed run grounds and rewrites once
+        # (the cache lives in __dict__, off the nn.Module parameter tree).
+        key = (instruction, max_new_tokens, tuple(QwenImage21Edit._vision_digest(image) for image in images))
+        cache = self.__dict__.setdefault("_vision_cache", {})
+        if key in cache:
+            return cache[key]
         if self.text_encoder is None:
             raise RuntimeError("The text encoder was released by the memory saver; reload the model.")
         feeds = [QwenImage21Edit._vision_feed(image) for image in images]
@@ -378,7 +439,19 @@ class QwenImage21Edit(nn.Module):
             image_grid_thw=mx.array(inputs["image_grid_thw"]),
             max_new_tokens=max_new_tokens,
         )
-        return self.processor.tokenizer.decode(ids)
+        reply = self.processor.tokenizer.decode(ids)
+        if len(cache) >= 32:
+            cache.pop(next(iter(cache)))
+        cache[key] = reply
+        return reply
+
+    @staticmethod
+    def _vision_digest(image: Image.Image, budget: int = 512) -> str:
+        # Hash a feed-sized copy: the vision tower sees only ~512px, and hashing the full
+        # source would copy it in memory for every lookup.
+        size = QwenImage21LatentCreator.dimensions(budget, image.width / image.height)
+        small = image.resize(size, Image.Resampling.BOX)
+        return hashlib.sha1(small.tobytes()).hexdigest() + f"{image.size}{image.mode}"
 
     @staticmethod
     def _vision_feed(image: Image.Image, budget: int = 512) -> Image.Image:

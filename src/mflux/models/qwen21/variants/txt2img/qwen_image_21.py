@@ -38,6 +38,7 @@ class QwenImage21(nn.Module):
         lora_scales: list[float] | None = None,
         lora_preset: str | None = None,
         bake_lora: bool = False,
+        compute_precision: mx.Dtype | None = None,
     ):
         super().__init__()
         Qwen21Initializer.init(
@@ -45,6 +46,10 @@ class QwenImage21(nn.Module):
             quantize=quantize,
             model_path=model_path,
             model_config=Qwen21LoRA.configure(model_config, lora_preset),
+            lora_paths=lora_paths,
+            lora_scales=lora_scales,
+            bake_lora=bake_lora,
+            compute_precision=compute_precision,
         )
         Qwen21LoRA.apply(self, lora_paths, lora_scales, lora_preset, bake_lora, reference=False)
 
@@ -127,7 +132,7 @@ class QwenImage21(nn.Module):
             signal_fn=self.transformer.time_text_embed,
         )
 
-        try:
+        with self.transformer.inference_projections():
             for t in config.time_steps:
                 try:
                     latents = config.scheduler.scale_model_input(latents, t)
@@ -160,19 +165,21 @@ class QwenImage21(nn.Module):
                     raise StopImageGenerationException(
                         f"Stopping image generation at step {t + 1}/{config.num_inference_steps}"
                     )
-        finally:
-            # the text-prefix K/V cache is O(100 MB) per prompt: free it when the loop ends
-            self.transformer.clear_text_cache()
 
         ctx.after_loop(latents)
 
         latents = Qwen21LatentCreator.unpack_latents(latents=latents, height=config.height, width=config.width)
         decoded = VAEUtil.decode(vae=self.vae, latent=latents, tiling_config=self.tiling_config)
-        parameters = step_cache.generation_parameters(step_cache_ratio)
+        parameters = {
+            **step_cache.generation_parameters(step_cache_ratio),
+            **self.compute_precision.generation_parameters(),
+        }
         if self.lora_preset:
             parameters["lora_preset"] = self.lora_preset
         if self.bake_lora:
             parameters["bake_lora"] = True
+        if scheduler != "linear":
+            parameters["scheduler"] = scheduler
         return ImageUtil.to_image(
             decoded_latents=decoded,
             config=config,

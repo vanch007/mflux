@@ -1,9 +1,9 @@
-import sys
 import warnings
 from argparse import Namespace
 
 from mflux.callbacks.callback_manager import CallbackManager
 from mflux.cli.parser.parsers import CommandLineParser, lora_init_kwargs_from_args
+from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.config.model_config import ModelConfig
 from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.z_image.latent_creator import ZImageLatentCreator
@@ -40,11 +40,16 @@ def build_parser() -> CommandLineParser:
     parser = CommandLineParser(description="Generate an image using Z-Image.")
     parser.add_general_arguments()
     parser.add_model_arguments(require_model_arg=False, default_model=DEFAULT_MODEL)
+    parser.add_compute_precision_arguments()
     parser.add_lora_arguments()
     parser.add_image_generator_arguments(supports_metadata_config=True)
     parser.add_image_to_image_arguments()
     parser.add_pid_decode_arguments()
+    parser.add_float32_arguments()
     parser.add_output_arguments()
+    # The command's scheduler. A parser default, so --scheduler=NAME, a --config-from-conf replay
+    # and a script that parses these flags all see it the way the command line does.
+    parser.set_defaults(scheduler="flow_match_euler_discrete")
     return parser
 
 
@@ -68,6 +73,8 @@ class ZImageCommand:
             model_config=ZImageCommand.validate(args),
             quantize=args.quantize,
             model_path=args.model_path,
+            float32=args.float32,
+            compute_precision=ComputePrecision.dtype_for(args.compute_precision),
             **lora_init_kwargs_from_args(args),
         )
 
@@ -95,10 +102,6 @@ class ZImageCommand:
 def main():
     parser = build_parser()
     args = parser.parse_args()
-
-    # The command's scheduler default; it reads sys.argv, so it stays here, not in generate().
-    if "--scheduler" not in sys.argv:
-        args.scheduler = "flow_match_euler_discrete"
 
     model_config = ZImageCommand.validate(args)
 

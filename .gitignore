@@ -33,8 +33,17 @@ build/
 .fls
 .aux
 .log
-.claude
+
+# AI Agent wrangling: git committing MFlux project stuff...  while excluding developer personal/custom stuff
+.claude/*
+!.claude/skills/
+!.claude/settings.json
+.claude/settings.local.json
+.claude/skills/gitnexus-*/
 CLAUDE.md
+CLAUDE.local.md
+tmp-PR-content.md
+tmp-PR-body.md
 .gitnexus
 
 # Local evaluation outputs and debug artifacts

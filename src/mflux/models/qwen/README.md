@@ -42,6 +42,13 @@ image = model.generate_image(
 )
 image.save("qwen_tiger.png")
 ```
+
+You can also call the steps of `mflux-generate-qwen` and `mflux-generate-qwen-edit` from Python. `QwenImageCommand` (in `mflux.models.qwen.cli.qwen_image_generate`) and `QwenImageEditCommand` (in `mflux.models.qwen.cli.qwen_image_edit_generate`) each have `validate(args)`, `load(args)` and `generate(model, args, seed, prompt)`. They work like the Z-Image Turbo steps; the [Z-Image README](../z_image/README.md#z-image-turbo-example) has a full script and the rules for keeping a model loaded. Things to know for Qwen:
+
+- A process that keeps the model loaded also keeps the text encoder: about 14 GB, or 15.5 GB for edits, which also load its vision part. `--quantize` does not shrink it, because mflux leaves the text encoder in bfloat16 on purpose (about 7 billion parameters at 2 bytes each). The exception is a pre-quantized checkpoint that ships its own quantized text encoder.
+- `--model` takes this command's own names, a repo id or a local path. Another model's built-in name, such as `dev`, raises `ModelConfigError` before any weight is loaded. With a repo id or path, `--base-model` must also name this command's model, by alias or repo id.
+- When `--guidance` is not given, `generate()` uses 3.5 for text-to-image and 2.5 for edits.
+- `QwenImage` keeps each prompt's text embeddings in `model.prompt_cache`, one entry per distinct pair of prompt and negative prompt. A process that stays up and sees many different prompts should clear it now and then with `model.prompt_cache.clear()`, then `gc.collect()` and `mx.clear_cache()`. `QwenImageEdit` does not use that cache.
 </details>
 
 <details>
@@ -163,7 +170,7 @@ image.save("qwen_food.png")
 ## Qwen Image Edit (natural language image editing)
 **Qwen Image Edit** enables precise natural language image editing, allowing you to modify images using text instructions while maintaining their original structure and context. The model uses a vision-language encoder to understand both the input image and your editing instructions.
 
-Qwen Image Edit supports natural language editing with descriptive text instructions, maintains original poses and body positions when requested, supports multiple images for complex compositions, and works seamlessly with LoRA adapters for specialized transformations like camera angles and styles. The model uses `Qwen/Qwen-Image-Edit-2511`.
+Qwen Image Edit supports natural language editing with descriptive text instructions, maintains original poses and body positions when requested, supports multiple images for complex compositions, and works seamlessly with LoRA adapters for specialized transformations like camera angles and styles. The command runs `Qwen/Qwen-Image-Edit-2509` by default. `--model qwen-image-edit-2511` (Python: `ModelConfig.qwen_image_edit_2511()`) runs `Qwen/Qwen-Image-Edit-2511`, which reads its reference images at timestep 0 (`zero_cond_t` in diffusers).
 
 ![Qwen Image Edit Examples](../../assets/qwen_edit_example.jpg)
 *Examples showing dog replacement with two-image input and monkey camera angle transformations with LoRAs. Source images: [Golden Retriever](https://images.unsplash.com/photo-1552053831-71594a27632d), [Grey Dog](https://images.unsplash.com/photo-1566710582818-d673dc761201), and [Monkey](https://images.unsplash.com/photo-1578948610588-ffe24448f5ed).*
@@ -199,6 +206,8 @@ image = model.generate_image(
 )
 image.save("qwen_edit_dogs.png")
 ```
+
+To run the command itself step by step with its own flags, use `QwenImageEditCommand` from `mflux.models.qwen.cli.qwen_image_edit_generate`. It has the same `validate(args)`, `load(args)` and `generate(model, args, seed, prompt)` steps as `QwenImageCommand` in the text-to-image section, with a default guidance of 2.5. Its `generate()` raises `ValueError` when `args.image_paths` is empty or `None`. The command line always sets it, so this only matters when you build `args` yourself.
 </details>
 
 ### Example 2: Single Image with LoRAs (Camera Angle Transformations)
@@ -253,4 +262,4 @@ image.save("qwen_edit_monkey.png")
 8. **Output Size**: By default, edits keep the first input image size. Use `--width`/`--height` or scale factors like `2x` when you want resizing.
 
 > [!WARNING]
-> Note: The Qwen Image Edit model requires downloading the `Qwen/Qwen-Image-Edit-2509` model weights (~58GB for the full model, or use quantization for smaller sizes).
+> Note: The Qwen Image Edit model requires downloading the `Qwen/Qwen-Image-Edit-2509` model weights, or `Qwen/Qwen-Image-Edit-2511` for 2511 (~58GB for the full model, or use quantization for smaller sizes).

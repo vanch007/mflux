@@ -109,7 +109,7 @@ These options act on the first reference image. They are MFLUX additions, not pa
 | `--strength 0.6` | Skips the first `1 - strength` of the schedule and starts from the source noised to that point, for subtler edits. The default `1.0` starts from pure noise. |
 | `--enhance-prompt` | Rewrites a terse instruction into a detailed prompt first, following the official prompt-rewrite recipe. An unparseable reply keeps the original. |
 | `--verify` / `--verify-retries N` | Asks the Qwen3-VL whether the edit applied and the rest is unchanged, and regenerates with the next seed up to `N` times on a failed check. |
-| `--use-step-cache` | Skips transformer blocks 1..N on steps whose first-block output barely changed (threshold `--step-cache-threshold`, default 0.12). Faster, and slightly different output. Needs `--use-kv-cache`. |
+| `--use-step-cache` | Skips transformer blocks 1..N on steps whose first-block output barely changed (threshold `--step-cache-threshold`, default 0.12). Faster, and slightly different output. Needs `--use-kv-cache`. Runs under 10 steps, like the 6-step `viggle_turbo`, skip nothing. |
 
 ```sh
 mflux-generate-qwen-2.1-edit \
@@ -122,7 +122,8 @@ mflux-generate-qwen-2.1-edit \
 
 Auto-mask, prompt rewriting and verification decode greedily with the text encoder's own untied `lm_head`, so they need no extra download. The head is about 1.2 GB in bf16 and 0.66 GB at q8. The loader keeps it lazy and reads it only when one of these options first uses it. `save_model` still writes the head, so exports keep these options. Checkpoints saved before this support existed do not have the head. They still generate. Auto-mask and verification raise a missing-head error; prompt rewriting logs a warning and retains the original instruction.
 
-Older Heretic MLX exports omitted both `lm_head.weight` and `language_model.norm.weight`. The original Heretic checkpoint contains them. Restore the missing BF16 tensors without replacing the encoder's existing weights:
+Qwen-Image-2.1 reference edit documentation
+
 
 ```sh
 uv run python scripts/restore_qwen21_heretic_head.py --model-path /path/to/Qwen-Image-2.1-Heretic-mlx-bf16
@@ -160,12 +161,12 @@ Exports created before component consolidation remain loadable through their ori
 mflux-generate-qwen-2.1-edit \
   --model ./qwen21-8bit \
   --prompt "A red panda reading a book" \
-  --seed 42 --metadata \
+  --seed 42 --make-conf \
   --output saved-model.png
 
 mflux-generate-qwen-2.1-edit \
   --model ./qwen21-8bit \
-  --config-from-metadata saved-model.metadata.json \
+  --config-from-conf saved-model.metadata.json \
   --output replay.png
 ```
 
@@ -195,6 +196,8 @@ edited = model.generate_image(
 )
 edited.save("panda-scarf.png")
 ```
+
+`model.rewrite_prompt(prompt, images)` returns the prompt that `enhance_prompt=True` would encode, so you can read or change it and then pass it as `prompt` with `enhance_prompt=False`. Where `enhance_prompt=True` falls back to the original instruction, `rewrite_prompt` raises. The rewrite sees every reference image. `images`, like `image_paths` in `generate_image`, takes paths or PIL images; the image metadata then records `<in-memory image>` for them.
 
 ## Reference and validation
 
