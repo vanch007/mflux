@@ -89,7 +89,6 @@ class QwenImage21Edit(nn.Module):
         enhance_prompt: bool = False,
         verify: bool = False,
         verify_retries: int = 0,
-        scheduler: str = "linear",
     ) -> GeneratedImage:
         if num_inference_steps is None:
             num_inference_steps = (
@@ -140,7 +139,6 @@ class QwenImage21Edit(nn.Module):
             # the source noised to that sigma instead of pure noise
             image_path=QwenImage21Edit._recorded_path(image_paths[0]) if strength < 1 else None,
             image_strength=1 - strength if strength < 1 else None,
-            scheduler=scheduler,
         )
         original_prompt = prompt
         if enhance_prompt:
@@ -318,7 +316,6 @@ class QwenImage21Edit(nn.Module):
                 strength=strength,
                 use_step_cache=use_step_cache,
                 step_cache_threshold=step_cache_threshold,
-                scheduler=scheduler,
             )
             # the retry got the resolved mask and prompt; record how they were derived
             retry_image.generation_parameters.update(

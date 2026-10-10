@@ -18,7 +18,6 @@ def build_parser() -> CommandLineParser:
     parser.add_general_arguments()
     parser.add_model_arguments(require_model_arg=False, default_model=DEFAULT_MODEL)
     parser.add_compute_precision_arguments()
-    parser.add_lora_arguments()
     parser.add_image_generator_arguments(supports_metadata_config=True, supports_dimension_scale_factor=True)
     parser.add_image_to_image_arguments(required=False)
     parser.add_output_arguments()

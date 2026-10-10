@@ -38,7 +38,6 @@ def build_parser() -> CommandLineParser:
     parser.add_general_arguments()
     parser.add_model_arguments(require_model_arg=False, default_model="qwen-image-2.1")
     parser.add_compute_precision_arguments()
-    parser.add_lora_arguments()
     parser.add_image_generator_arguments(supports_metadata_config=True, supports_dimension_scale_factor=True)
     parser.set_defaults(width=None, height=None, scheduler=None)
     parser._option_string_actions["--scheduler"].help = "Automatic: linear for base/Turbo8, viggle_turbo for Viggle."
@@ -252,7 +251,6 @@ def main() -> None:
                 enhance_prompt=args.enhance_prompt,
                 verify=args.verify,
                 verify_retries=args.verify_retries,
-                scheduler=args.scheduler,
             )
             if getattr(image, "verification", None) is not None:
                 print(f"verification: {image.verification}")
