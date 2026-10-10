@@ -1,259 +1,101 @@
 ---
 name: mflux-qwen-image-21
-description: "Run Qwen-Image-2.1 text-to-image, image editing, and img2img locally on Apple Silicon via mflux (MLX). Covers optional Viggle Turbo acceleration LoRA, CLI/Python usage, quantization, True CFG, prefix KV caching, multi-reference editing, RGBA output, and model saving."
+description: "Run and maintain the local Qwen-Image-2.1 deployment on Apple Silicon via mflux/MLX and mflux-paint. Select Heretic or NoctQ with standard/HDR VAE, configure acceleration and effect LoRAs, and generate or edit images with reference conditioning, RGBA, masks and prompt enhancement."
+metadata:
+  last_verified: "2026-10-06"
 ---
 
 # Qwen-Image-2.1 via mflux (MLX)
 
-Local deployment of Qwen-Image-2.1 through mflux, running natively on Apple Silicon with MLX. Based on [PR #741](https://github.com/mflux-community/mflux/pull/741) which adds prefix KV caching, multi-reference editing, and RGBA output on top of [PR #736](https://github.com/mflux-community/mflux/pull/736).
+Use this skill for the local Qwen-Image-2.1 deployment, its CLI/Python usage, WebUI configuration and controlled image comparisons. Read the project rules before changing either repository. Other image-model families and remote image-generation services are outside this skill's scope.
 
-## Prerequisites
+## Local environment and model selection
 
-- **Project location**: `/Users/vanch/mflux-pr736`
-- **Virtual env**: `/Users/vanch/mflux-pr736/.venv` (Python 3.13.5, MLX/Metal 0.32.2 (runtime and lock verified 2026-09-27))
-- **Deployed weights**: `/Users/vanch/models/mlx/Qwen-Image-2.1-Heretic-mlx-bf16` (~33 GB bf16)
-  - Transformer: 14.2 GB, Text encoder (Qwen3-VL Heretic): 17.5 GB, VAE: 1.4 GB
-- **Text encoder**: Replaced with `pottokao/Qwen-Image-2.1-Text-Encoder-Heretic`; the local RoPE-config compatibility patch must be preserved.
-- **Generation head**: The deployed export includes the original Heretic BF16 `lm_head.weight` and final norm (restored 2026-10-01). Built-in `--auto-mask`, `--enhance-prompt` and `--verify` passed real calls; ordinary conditioning is bit-identical. Older headless BF16 exports can use `uv run python scripts/restore_qwen21_heretic_head.py --model-path PATH`. Evidence: `docs/heretic-generation-head-2026-10-01.md`. The head stays lazy until an auxiliary text-generation call; WebUI oMLX PE remains separately configured.
-- **Memory**: Peak ~46 GB at bf16. 64 GB machine recommended. Use `-q 8` for tighter memory.
-- **All commands** must run from the project directory:
+- Core: `/Users/vanch/mflux-pr736`; WebUI: `/Users/vanch/mflux-paint`.
+- Run core commands from the core directory with `uv run --no-sync`.
+- Verified runtime: Python 3.13.5, mflux 0.20.0, MLX and mlx-metal 0.32.2 (2026-10-03).
+- Canonical package: `/Users/vanch/.skills-manager/skills/mflux-qwen-image-21`; `/Users/vanch/.codex/skills/mflux-qwen-image-21` is its symlink. The package under the core repo's `.cursor/skills/` is a synchronized portable mirror.
+
+| WebUI model option | Local model directory |
+| --- | --- |
+| Qwen-Image-2.1 Heretic · bf16 | `/Users/vanch/models/mlx/Qwen-Image-2.1-Heretic-mlx-bf16` |
+| Qwen-Image-2.1 Heretic (HDR VAE) · bf16 | `/Users/vanch/models/mlx/Qwen-Image-2.1-Heretic-HDR-mlx-bf16` |
+| Qwen-Image-2.1 Turbo (官方 8步) · bf16 | `/Users/vanch/models/mlx/Qwen-Image-2.1-Turbo-Heretic-mlx-bf16` |
+| Qwen-Image-2.1 Turbo (官方 8步 · HDR VAE) · bf16 | `/Users/vanch/models/mlx/Qwen-Image-2.1-Turbo-HDR-mlx-bf16` |
+| Qwen-Image-2.1 NoctQ V4 · bf16 | `/Users/vanch/models/mlx/Qwen-Image-2.1-NoctQ-bf16` |
+| Qwen-Image-2.1 NoctQ V4 (HDR VAE) · bf16 | `/Users/vanch/models/mlx/Qwen-Image-2.1-NoctQ-HDR-mlx-bf16` |
+
+Heretic replaces the text/vision encoder while retaining the original diffusion transformer. NoctQ V4 supplies a fine-tuned diffusion transformer and shares the deployed Heretic encoder/processor. Both use the original FP32 VAE unless an HDR combination is selected. HDR combinations share `/Users/vanch/models/mlx/qwen21-hdr-vae-mlx-fp32` through symlinks; they do not duplicate the base weights.
+
+The local 8-bit/4-bit model exports were removed. Core quantization and remote aliases still exist; do not describe those aliases as downloaded models or recreate exports without a task requiring them.
+
+Read [deployment and technical reference](references/technical-reference.md) for source revisions, component metadata, shared paths, HDR tradeoffs and current limitations.
+
+## Acceleration and effect adapters
+
+| Acceleration option | CLI preset | Steps | Scheduler | Default scale / guidance |
+| --- | --- | --- | --- | --- |
+| Viggle v0.3 r128 (local default) | `viggle-turbo` | 6; local 8-step option | `viggle_turbo` | 1.0 / 1.0 |
+| Viggle v0.3 r256 | `viggle-turbo` + explicit r256 file | 6; local 8-step option | `viggle_turbo` | 1.0 / 1.0 |
+| Turbo8 (chriswritescode) | `turbo8` | 8 | `linear` | 1.0 / 1.0 |
+| No acceleration LoRA | omit preset and acceleration adapter | 40 default | `linear` | n/a / 1.0 |
+
+Nine effect LoRAs are downloaded: **Radiance Chrome Voluptuous v1.0**, **Natural Exposure**, **RunningHub perspective blend v2.0 (pysj666)**, **SimpleTuner photo-aesthetics v2**, **f23gg NSFW**, **BFS Head V1.1**, **BFS Head V1.1 Alternative**, **BFS Body V1.0**, and **Outfit Swap Consistency (step 1000)**. Their default local scale is 1.0, independently adjustable from the acceleration scale; effect adapters are disabled by default. Their files, cache revisions, trigger evidence and author recipes are in [LoRA catalog](references/lora-catalog.md). Read it when selecting, stacking, updating or benchmarking adapters.
+
+- Use **one acceleration adapter** at a time, optionally with effect adapters. Never stack Viggle r128, r256 and Turbo8 together.
+- Keep adapters at runtime: `--no-bake-lora`. The Turbo presets reject bf16 baking; export adapter-free bases.
+- When supplying explicit `--lora` files alongside a preset, include its acceleration file too. Preset auto-selection occurs only when no LoRA list is supplied.
+- Scale 0.85 remains available as an experiment; default is 1.0. Do not claim a universal quality optimum from one prompt.
+- The Viggle repository contains **both LoRAs and premerged GGUF/INT8/FP8 transformers**. Local deployment uses the v0.3 r128/r256 LoRAs, not those premerged checkpoints. v0.2.1/r64 are historical, not current local choices.
+- Viggle's current author card describes a **9-step hybrid base tail**. Local presets support only 6/8 steps; the existing 8-step schedule is not the new 9-step algorithm.
+- Preserve requested image content. Distinguish an author trigger from a locally added style phrase; never assume an NSFW adapter requires adding nudity to a clothed prompt.
+
+## Generate and edit
+
+Use `mflux-generate-qwen-2.1-edit` as the primary entry point for both tasks. Pass an explicit local model directory to use these deployed weights: omitting `--model` selects `Qwen/Qwen-Image-2.1`, not the local Heretic variant.
 
 ```sh
 cd /Users/vanch/mflux-pr736
-```
-
-## Image Editing (edit) — Primary Use
-
-Takes one or more reference images plus a text instruction. **KV cache is ON by default**, caching text and reference-image prefix attention across denoising steps. Measure the gain for the specific workload; reduced-precision cached and uncached outputs need not be identical.
-
-**Independent edit noise is ON by default.** Reusing the seed and dimensions that generated a reference can cause severe oversharpening and background noise. The local edit pipeline now derives a deterministic noise seed from the requested seed plus the resized RGBA reference pixels (dimensions and order included). Same seed and references remain reproducible, chained edits receive new noise, and text-only generation is unchanged. This applies to the base model and both Turbo adapters, including WebUI calls.
-
-### CLI
-
-```sh
 uv run --no-sync mflux-generate-qwen-2.1-edit \
-  --image-paths /path/to/source.png \
-  --prompt "Replace the Chinese text with Vietnamese text" \
-  --steps 40 \
-  --seed 42 \
-  --output edited.png
-```
-
-**Key flags:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--image-paths` | none | One or more reference images (up to 10) |
-| `--steps` | 40 | Inference steps |
-| `--seed` | random | Reproducibility seed |
-| `--width` / `--height` | auto | Output size (32x multiples). Auto-derives from last reference image |
-| `--output-resolution` | 1024 | Pixel-area budget for automatic output dimensions |
-| `--reference-resolution` | 1024 | Independent reference encoding budget; keep 1024 for Turbo training alignment |
-| `--use-kv-cache` | ON | Prefix KV caching. Disable with `--no-use-kv-cache` |
-| `--independent-edit-noise` | ON | Prevent reuse of a generated reference's initial noise; disable only for legacy reproduction/parity |
-| `-q 8` or `-q 4` | None (bf16) | Quantize eligible transformer + text/vision layers; VAE stays FP32 |
-| `--guidance` | 1.0 | CFG scale. >1.0 with `--negative-prompt` for True CFG |
-| `--output` | image.png | Output path (must be .png, .webp, or .tiff for RGBA) |
-| `--metadata` | off | Export JSON metadata sidecar |
-| `--vae-tiling` | off | Tiled VAE decode to reduce peak memory |
-
-**Multi-reference editing** (up to 10 images):
-
-```sh
-uv run --no-sync mflux-generate-qwen-2.1-edit \
-  --image-paths subject.png scene.png \
-  --prompt "Place the subject from image 1 in the setting of image 2." \
-  --steps 40 --seed 42 \
-  --output-resolution 512
-```
-
-**Transparent output (RGBA)**:
-
-```sh
-uv run --no-sync mflux-generate-qwen-2.1-edit \
-  --prompt "This is an RGBA image with transparency. A cute sticker. The background is transparent." \
-  --seed 42 \
-  --output sticker.png
-```
-
-### Python API
-
-```python
-from mflux.models.qwen21.reference import QwenImage21Edit
-
-model = QwenImage21Edit(quantize=None)
-
-# Edit with KV cache (default)
-image = model.generate_image(
-    seed=42,
-    prompt="Replace the Chinese text with Vietnamese text",
-    image_paths=["/path/to/source.png"],
-    num_inference_steps=40,
-    width=512,
-    height=736,
-    guidance=1.0,
-    use_kv_cache=True,  # default
-)
-image.save("edited.png")
-```
-
-Python exposes `independent_edit_noise=True`. Metadata records the requested `seed`, effective `noise_seed`, and this policy. Older metadata files lacking the policy replay with their original direct-seed behavior; add `--independent-edit-noise` to apply the fix when replaying an old sidecar. New sidecars restore the saved policy.
-
-## Optional Viggle v0.3 acceleration LoRA
-
-Only the v0.3 **r128** and **r256** adapters are supported by the Turbo preset. Default is r128, 6 steps, scale 1.0, guidance 1, no negative prompt, runtime LoRA, KV cache ON. The base model remains 40 steps. Verified against the official card on 2026-09-26.
-
-```sh
-uv run --no-sync mflux-generate-qwen-2.1-edit \
+  --model /Users/vanch/models/mlx/Qwen-Image-2.1-Heretic-mlx-bf16 \
   --lora-preset viggle-turbo --steps 6 --guidance 1 \
   --prompt "A red ceramic teapot on a wooden table" \
-  --width 1024 --height 1024 --seed 42 --metadata --output turbo.png
+  --width 1024 --height 1024 --seed 42 \
+  --mlx-cache-limit-gb 8 --no-bake-lora --metadata --output teapot.png
 ```
 
-The preset automatically selects `viggle_turbo`; an explicit incompatible scheduler is rejected. Use `--steps 8` for the official dense-text schedule. Four steps and arbitrary step counts are no longer offered in this local preset.
+Add `--image-paths source.png` for editing, or up to 10 ordered reference paths for multi-reference editing. Image1 is the edit source and supplies the default output aspect ratio; subsequent references only supply conditioning. The same model handles text-only generation when no references are supplied. Explicit dimensions must be multiples of 32. Reference encoding stays at `--reference-resolution 1024`, independently of output dimensions.
 
-- Six raw nodes: `[1, 0.9375, 0.875, 0.75, 0.5, 0.25]`.
-- Eight raw nodes: `[1, 0.9375, 0.875, 0.75, 0.625, 0.5, 0.25, 0.125]`.
-- Apply resolution-dependent shifting once; `sigma_shift_terminal=None`. Never substitute equally spaced 6/8-step nodes or bake into bf16.
-- Both adapters are pinned to revision `009a44a895ef85f7e643c80fdca9543795248867` in `Viggle/Qwen-Image-2.1-viggle-turbo`. r128: 679,604,800 bytes; r256: 1,359,147,904 bytes. Base weights are reused.
-- To select r256, add `--lora Viggle/Qwen-Image-2.1-viggle-turbo:Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r256.safetensors 1.0`.
-- Add `--image-paths source.png` for editing. References use `--reference-resolution 1024` independently of output dimensions and `--output-resolution`. Prefer dimensions aligned to 32. Strength-based img2img is incompatible with the preset.
-- Python: `QwenImage21Edit(lora_preset="viggle-turbo")`; omitted steps and scheduler resolve to 6 and `viggle_turbo`.
+KV cache and deterministic independent edit noise are ON by default. The latter hashes the requested seed and resized RGBA reference pixels/order to avoid reusing a generated reference's initial noise. Old metadata may replay its original shared resolution/noise policy; see [usage](references/usage.md).
 
-Scale 0.85 is supported as an experimental comparison setting in CLI/API/WebUI; it is not the official distilled recipe. CFG above 1 is allowed in CLI/API with a warning, but not promoted as an edit-quality improvement. Old metadata without `reference_resolution` replays the historical shared output/reference budget; pass `--reference-resolution 1024` explicitly to apply the updated default.
+Read [usage](references/usage.md) for r256/Turbo8, effect stacking, HDR/NoctQ, Python, resolution presets, masks, True CFG, RGBA, img2img, quantization and model saving.
 
-Other Qwen 2.1 adapters use `--lora PATH SCALE` or Python `lora_paths` / `lora_scales`. The local loader supports Diffusers, PEFT (including `.default`), common ComfyUI/Kohya names and fused `img_mlp.gate_up` tensors. Older Qwen Image 20B adapters are incompatible. Export base checkpoints without adapters, then load LoRAs at runtime.
+## WebUI and prompt enhancement
 
-Distillation changes quality; 6/8 steps cannot guarantee the 40-step model's complex-edit or text fidelity. Keep Heretic as requested. The local oMLX prompt rewriter is an optional approximation, not the official PE-T2I/PE-I2I models; its edit rewrite does not see the reference image.
+Start `/Users/vanch/mflux-paint/start_webui.sh`; open `http://127.0.0.1:7866/`. Model precision/base/VAE selection is separate from acceleration and effect adapter choices. Each of the four Qwen entries uses `auto` mode: references present means editing; no references means text-to-image. Switching acceleration resets its steps/guidance/scale defaults; explicit scale edits are preserved for the run.
 
-Current configuration audit: `/Users/vanch/mflux-pr736/outputs/config-audit-2026-09-26/`. Historical outputs remain in `outputs/qwen21-turbo-2026-09-23/`; their settings and timings are historical evidence, not the current recipe.
+The current browser UI selects **one effect LoRA** in addition to its acceleration LoRA. The backend `extra_loras` list and core repeated `--lora` arguments accept multiple effect adapters with independent scales; do not claim the browser exposes a multi-effect selector.
 
-Further edit-quality evidence (reference/output budget separation, original-input UI transport and native output): `/Users/vanch/mflux-pr736/outputs/qwen21-edit-quality-2026-09-27/`. These are one-prompt, single-seed comparisons; no general perceptual quality win is established.
+Radiance Chrome selects independent author strength 1 and preserves acceleration; no-acceleration selection uses a local 25-step starting point based on sample filenames. All 448 tensors load directly, alone or stacked with r128. Its automatic `Reversal Film Gravure, analog film photography,` prefix is an editable sample style description: no mandatory trigger is declared. Preserve requested clothing/content and do not auto-insert sample white-balance defects. Its Euler/simple author recipe is not identical to mflux's timestep grid. See [integration/comparison evidence](reports/radiance-chrome-2026-10-06.md).
 
-The audit's 1024² selective-color defect was isolated on 2026-09-27 to source/edit noise reuse: the pinned official Diffusers implementation reproduced it, and changing only seed 42 to 43 removed it. The default independent-noise fix passed real WebUI tests for both v0.2.1 adapters with the original seed 42, 1024×1024 and 6 steps. Evidence and embedded-image comparison: `/Users/vanch/mflux-pr736/outputs/qwen21-edit-fix-2026-09-27/`. This verifies that failure case, not universal edit fidelity; unrelated historical panda samples have not been revalidated.
+RunningHub lighting blend inserts the declared **`pysj666`** trigger at the beginning, including after WebUI prompt enhancement. It preserves the current acceleration recipe and initializes only its own effect strength to 1. Its card describes consistent object/background illumination, specular highlights and contact shadows but publishes no optimal inference scale/steps or required reference count. All 448 tensors load in MLX alone and with Viggle r128; generated-image quality is untested for this addition. See [integration evidence](reports/runninghub-lighting-2026-10-05.md).
 
-## WebUI (Browser & Canvas Interface)
+BFS needs at least two ordered references: `<image1>` is the original scene and `<image2>` is the source face/person. Selection inserts the author's `head_swap:` or `body_swap:` prompt, defaults to effect strength 1 and no-acceleration 40 steps, and disables StepCache for that baseline. The browser and HTTP run handler reject fewer than two references. Head includes hair/identity; Body includes clothing/body proportions. Accelerated BFS combinations are selectable but do not claim their quality is validated. The body author's separate scene/person pixel budgets are not implemented; references currently share the 1024² encoding policy.
 
-A graphical WebUI with an interactive drawing canvas, image upload, inpaint/edit, and model picker is available via `/Users/vanch/mflux-paint`:
+Outfit Swap needs image1 = the person to dress, image2 = outfit (product shot, flat lay or a wearer). It has **no trigger word**. The browser adds an editable author-based swap template, uses the pinned step-1000 file, and selects no acceleration, 25 steps, guidance/scale 1 and StepCache off. Specify the garment briefly. If compositions mix, try a product photo or crop to the garment: a same-noise local crop trial passed qualitatively after the full-scene pair failed. See [integration evidence](reports/outfit-swap-2026-10-05.md). Reference labels and first-image mask checks reflect these roles. Acceleration remains selectable independently; author-tested Viggle 8-step behavior is not proof of quality for all local combinations.
 
-```sh
-/Users/vanch/mflux-paint/start_webui.sh
-```
+WebUI Qwen runs cap the MLX allocator cache at 8 GB. This is not an 8 GB total-memory limit. Output sizing always follows image1, even while another reference is active in the canvas. Auto preserves image1 dimensions up to 1536² area with 32-pixel alignment; larger sources are scaled to that budget. Whole-image edits preserve generated dimensions; masked edits composite at image1's canvas dimensions. Up to 10 original references are sent without a canvas re-encode. See [first-reference canvas evidence](reports/reference-canvas-2026-10-05.md).
 
-Open `http://127.0.0.1:7866` in Safari / Chrome.
+The WebUI PE uses local oMLX at port 8000 with `Qwen3.6-35B-A3B-Uncensored-Genesis-Hermes-V13-dequantized-oQ6e-fp16-mtp`. Edit PE constructs image inputs for up to 10 references; it is not text-only. Rules live at `mflux-paint/prompts/system_prompt_{t2i,edit}.txt` and include the local photography-lighting additions. These are adapted official rules plus local changes, not the official PE model weights or guaranteed official-equivalent behavior. Inspect the actual outgoing request/logs when diagnosing image understanding.
 
-Integrated models in the top-left dropdown:
-- `Qwen-Image-2.1 · Turbo Edit (r128 / r256)`: 6 steps by default, optional 8, guidance 1.0 and default LoRA strength 1.0 (editable, e.g. 0.85), KV cache ON.
-- `Qwen-Image-2.1 · Quality Edit (40 steps)`: Full 40-step reference editing.
-- `Qwen-Image-2.1 · Turbo T2I (r128 / r256)`: same Turbo recipe for text-only generation.
-- `Qwen-Image-2.1 · Quality Text-to-Image`: Full 40-step text-to-image.
+Built-in CLI `--auto-mask`, `--enhance-prompt` and `--verify` use the deployed Qwen3-VL generation head, restored on 2026-10-01. They are a separate path from WebUI oMLX PE. Preserve `lm_head.weight`, final norm, lazy loading and the Heretic RoPE compatibility patch.
 
+## Quality and performance evidence
 
-Qwen edit Auto preserves source dimensions up to a 1536² area cap with 32-pixel alignment. Explicit resolution options set area budgets. Whole-image edits export native generated pixels without scaling back to the input; masked edits keep canvas dimensions for compositing. The UI passes original image data without a canvas roundtrip, preventing pixel changes from altering the deterministic edit-noise seed. The reference encoding budget remains 1024². Text-to-image exposes explicit width/height. Quantization remains off by default.
+Measure with identical prompts, seed, dimensions, references, precision, VAE and adapter scales. Match starting CPU/GPU temperatures, cooling/fan settings and background workload; separate loading, generation and decoding. Identify whether the run is a cold process, warm model or cold file cache.
 
-## Text-to-Image (txt2img)
+Core `--use-step-cache` is OFF by default; WebUI's no-acceleration mode enables it at threshold 0.12. This is FBCache-style first-block residual reuse, not guaranteed identical pixels or a universally optimal threshold. Use `--no-use-step-cache` for an uncached 40-step baseline; record the setting in comparisons.
 
-For text-only generation without reference images, both the edit entry point and the original txt2img work:
+HDR VAE intentionally changes saturation, contrast and detail; it is a choice, not a quality-neutral default. Existing historical v0.2.1 results must not be relabeled as v0.3 tests. Micro-faces/crowds, dense text, complex edits, unusual alpha and NoctQ-plus-adapter combinations remain prompt-dependent.
 
-```sh
-# Using the edit entry point (has KV cache)
-uv run --no-sync mflux-generate-qwen-2.1-edit \
-  --prompt "A serene mountain lake at golden hour" \
-  --steps 40 --seed 42 \
-  --width 1024 --height 1024 \
-  --output output.png
-
-# Using the original txt2img entry point (no KV cache)
-uv run --no-sync mflux-generate-qwen-2.1 \
-  --prompt "A serene mountain lake at golden hour" \
-  --steps 40 --seed 42 \
-  --output output.png
-```
-
-### Python API (txt2img)
-
-```python
-from mflux.models.common.config import ModelConfig
-from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
-
-model = QwenImage21(
-    quantize=None,
-    model_config=ModelConfig.qwen_image_21(),
-)
-image = model.generate_image(
-    seed=42,
-    prompt="A serene mountain lake at golden hour",
-    num_inference_steps=40,
-    width=1024,
-    height=1024,
-)
-image.save("output.png")
-```
-
-## Image-to-Image (img2img)
-
-Uses the txt2img entry point with source image and strength:
-
-```sh
-uv run --no-sync mflux-generate-qwen-2.1 \
-  --prompt "Oil painting version" \
-  --image-path /path/to/source.jpg \
-  --image-strength 0.7 \
-  --steps 40 --seed 42
-```
-
-## True CFG (optional)
-
-```sh
-uv run --no-sync mflux-generate-qwen-2.1-edit \
-  --prompt "A photorealistic portrait" \
-  --negative-prompt "blurry, low quality, distorted" \
-  --guidance 2.5 \
-  --steps 40 --seed 42
-```
-
-## Quantization
-
-In the primary edit pipeline, `-q` quantizes eligible transformer and text/vision encoder layers; the VAE remains FP32 across the bf16, 8-bit and 4-bit model variants. This pipeline also handles text-only generation.
-
-The user requested removal of the VAE quantization experiment on 2026-09-27. Its CLI/API/config support and both experimental VAE exports have been deleted; use the original FP32 VAE. Historical comparison images and measurements are preserved at `/Users/vanch/mflux-pr736/outputs/qwen21-vae-quantization-2026-09-27/`, with the embedded report `/Users/vanch/Desktop/Qwen21_VAE量化冷机对比_1600x960.html`. Those experimental results do not describe the current deployment.
-
-```sh
-uv run --no-sync mflux-generate-qwen-2.1-edit --prompt "..." -q 8 --steps 40 --seed 42
-```
-
-Use the existing dense weights unless memory requires quantization; speed and quality depend on the workload. Do not retain additional model copies without need.
-
-## Model Saving (edit variant)
-
-```python
-from mflux.models.qwen21.reference import QwenImage21Edit
-
-model = QwenImage21Edit(quantize=8)
-model.save_model("./qwen21-8bit")
-```
-
-Note: `mflux-save --model qwen-image-2.1` exports the text-only implementation without the vision tower. Use `QwenImage21Edit.save_model()` for the full reference-capable model.
-
-## Performance evidence
-
-Use controlled measurements with the same prompt, seed, dimensions, reference budget, precision and KV setting. Record temperature and separate model loading from image generation. Earlier approximate PR #736/#741 timings do not establish an isolated KV-cache speedup.
-
-KV cache reuses the text prefix attention across denoising steps. The first step computes and caches; subsequent steps reuse. This works because `causal_condition` makes text activations step-independent.
-
-## Architecture Overview
-
-- **Transformer**: 7.1B single-stream block-causal DiT
-- **Text encoder**: Qwen3-VL Heretic (~17.5 GB bf16; eligible layers can be quantized by the edit pipeline)
-- **Vision tower**: Qwen3-VL vision model (for reference image understanding in edit mode)
-- **VAE**: 64-channel causal VAE, 16x spatial compression, RGBA output
-- **Prefix KV cache**: Text and reference image prefix cached across denoising steps
-- Neural inference runs through MLX; image preprocessing, tokenization and file I/O also use CPU libraries.
-
-## Current Limitations
-
-- LoRA inference is supported locally; LoRA training, rsLoRA/DoRA, and nontrivial PEFT alpha/rank metadata patterns are not.
-- PID decoding not yet supported
-- No video generation
-- Edit fidelity varies with prompt, reference and resolution; earlier failed examples do not establish a general size ranking.
-- This is a local reference-edit branch, not a wholesale checkout of upstream main. Main and open-PR support are tracked separately in the audit report.
+See [technical evidence](references/technical-reference.md), the [2026-10-03 synchronization audit](reports/sync-2026-10-03.md) and [skill contract](references/skill-contract.md) for evidence boundaries and maintenance responsibilities. Skill use does not authorize deleting weights, uploading models, publishing repositories or pushing code.
