@@ -60,6 +60,7 @@ MODEL_INFERENCE_STEPS = {
     "qwen-image-2.1-noctq-hdr-bf16": 40,
     "qwen-image-2.1-turbo-heretic-bf16": 8,
     "qwen-image-2.1-controlnet-union": 40,
+    "flux-3-image-klein": 16,
     "qwen-image-2.1-turbo": 8,
     "qwen-image-2.1-turbo-controlnet-union": 8,
     "schnell": 4,

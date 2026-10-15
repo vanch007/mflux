@@ -184,6 +184,11 @@ class ModelConfig:
 
     @staticmethod
     @lru_cache
+    def flux_3_image_klein() -> "ModelConfig":
+        return AVAILABLE_MODELS["flux-3-image-klein"]
+
+    @staticmethod
+    @lru_cache
     def boogu_image_turbo() -> "ModelConfig":
         return AVAILABLE_MODELS["boogu-image-turbo"]
 
@@ -888,6 +893,24 @@ AVAILABLE_MODELS = {
         sigma_max_shift=0.9,
         sigma_max_seq_len=8192,
         sigma_shift_terminal=0.02,
+    ),
+    "flux-3-image-klein": ModelConfig(
+        priority=40,
+        aliases=[
+            "flux-3-image-klein",
+            "flux-3",
+            "flux3",
+            "flux3-klein",
+            "black-forest-labs/flux-3-image-klein",
+        ],
+        model_name="black-forest-labs/flux-3-image-klein",
+        base_model=None,
+        controlnet_model=None,
+        custom_transformer_model=None,
+        num_train_steps=None,
+        max_sequence_length=4096,
+        supports_guidance=False,
+        requires_sigma_shift=False,
     ),
     "qwen-image-2.1-turbo": ModelConfig(
         # The distilled 8-step checkpoint of the base model, with the same architecture. It
