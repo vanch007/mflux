@@ -10,6 +10,8 @@ from mlx import nn
 
 from mflux.models.common.config import ModelConfig
 from mflux.models.common.lora.mapping.lora_loader import LoRALoader
+from mflux.models.common.lora.layer.linear_lora_layer import LoRALinear
+from mflux.models.common.lora.layer.fused_linear_lora_layer import FusedLoRALinear
 from mflux.models.common.resolution.lora_resolution import LoraResolution
 from mflux.models.qwen21.model.qwen21_scheduler import ViggleTurboScheduler
 from mflux.models.qwen21.weights.qwen21_lora_mapping import Qwen21LoRAMapping
@@ -169,14 +171,15 @@ class Qwen21LoRA:
                 layer = LoRALoader._get_target_module(transformer, target)
             except (AttributeError, KeyError, IndexError) as exc:
                 raise ValueError(f"LoRA target is absent from Qwen-Image-2.1: {target}") from exc
-            if not isinstance(layer, (nn.Linear, nn.QuantizedLinear)):
+            if not isinstance(layer, (nn.Linear, nn.QuantizedLinear, LoRALinear, FusedLoRALinear)):
                 raise ValueError(f"Unsupported LoRA target type at {target}")
             a, b = tensors.get("lora_A"), tensors.get("lora_B")
             if "alpha" in tensors and (tensors["alpha"].size != 1 or not math.isfinite(float(tensors["alpha"]))):
                 raise ValueError(f"LoRA alpha must be a finite scalar for {target}")
-            out_dim, in_dim = layer.weight.shape
-            if isinstance(layer, nn.QuantizedLinear):
-                in_dim *= 32 // layer.bits
+            base_module = getattr(layer, 'base_linear', getattr(layer, 'linear', layer))
+            out_dim, in_dim = base_module.weight.shape
+            if isinstance(base_module, nn.QuantizedLinear):
+                in_dim *= 32 // base_module.bits
             if (
                 a is None
                 or b is None

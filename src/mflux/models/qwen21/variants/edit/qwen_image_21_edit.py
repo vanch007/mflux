@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 MAX_REFERENCES = 10
 # The edit loop takes Euler steps over the scheduler's sigmas and never calls its step(), which is
 # the right update for these two only.
-EDIT_SCHEDULERS = ("linear", "viggle_turbo", "qwen_turbo")
+EDIT_SCHEDULERS = ("linear", "viggle_turbo", "qwen_turbo", "lightning", "qwen_lightning")
 
 
 class QwenImage21Edit(nn.Module):
@@ -59,9 +59,9 @@ class QwenImage21Edit(nn.Module):
             config,
             quantize,
             model_path,
-            lora_paths,
-            lora_scales,
-            bake_lora,
+            lora_paths=None,
+            lora_scales=None,
+            bake_lora=bake_lora,
             compute_precision=compute_precision,
         )
         Qwen21LoRA.apply(self, lora_paths, lora_scales, lora_preset, bake_lora, reference=True)
@@ -98,7 +98,7 @@ class QwenImage21Edit(nn.Module):
             )
         Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
         scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
-        if scheduler not in ("linear", "viggle_turbo", "qwen_turbo"):
+        if scheduler not in ("linear", "viggle_turbo", "qwen_turbo", "lightning", "qwen_lightning"):
             raise ValueError("Qwen-Image-2.1 editing supports linear, viggle_turbo, or qwen_turbo Euler sampling only.")
         if self.lora_preset and strength != 1.0:
             raise ValueError("Acceleration presets require strength=1 to retain all trained steps.")

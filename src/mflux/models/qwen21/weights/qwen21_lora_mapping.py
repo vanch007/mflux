@@ -38,13 +38,13 @@ class Qwen21LoRAMapping(LoRAMapping):
                     possible_up_patterns=[
                         f"{alias}.{suffix}"
                         for alias in aliases
-                        for suffix in ("lora_B.weight", "lora_B.default.weight", "lora_up.weight")
+                        for suffix in ("lora_B.weight", "lora_B.default.weight", "lora_up.weight", "lora.up.weight")
                     ]
                     + [f"{kohya}.lora_up.weight"],
                     possible_down_patterns=[
                         f"{alias}.{suffix}"
                         for alias in aliases
-                        for suffix in ("lora_A.weight", "lora_A.default.weight", "lora_down.weight")
+                        for suffix in ("lora_A.weight", "lora_A.default.weight", "lora_down.weight", "lora.down.weight")
                     ]
                     + [f"{kohya}.lora_down.weight"],
                     possible_alpha_patterns=[f"{alias}.alpha" for alias in [*aliases, kohya]],

@@ -8,7 +8,7 @@ from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
 from mflux.models.qwen21.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
-from mflux.models.qwen21.model.qwen21_scheduler import ViggleTurboScheduler, QwenTurboScheduler
+from mflux.models.qwen21.model.qwen21_scheduler import ViggleTurboScheduler, QwenTurboScheduler, QwenLightningScheduler
 from mflux.models.qwen21.variants.edit.qwen_image_21_edit import EDIT_SCHEDULERS, MAX_REFERENCES, QwenImage21Edit
 from mflux.utils.dimension_resolver import DimensionResolver
 from mflux.utils.exceptions import ModelConfigError, PromptFileReadError, StopImageGenerationException
@@ -171,6 +171,8 @@ def main() -> None:
         ViggleTurboScheduler.check_args(parser, args)
     elif args.scheduler == "qwen_turbo":
         QwenTurboScheduler.check_args(parser, args)
+    elif args.scheduler in ("lightning", "qwen_lightning"):
+        QwenLightningScheduler.check_args(parser, args)
     paths = args.image_paths or []
     if len(paths) > MAX_REFERENCES:
         parser.error(f"Qwen-Image-2.1 supports at most {MAX_REFERENCES} reference images.")
@@ -182,7 +184,7 @@ def main() -> None:
         if not math.isfinite(guidance) or guidance < 1:
             raise ValueError("guidance must be finite and at least 1.")
         args.scheduler = Qwen21LoRA.resolve_scheduler(args.lora_preset, args.scheduler)
-        if args.scheduler not in ("linear", "viggle_turbo", "qwen_turbo"):
+        if args.scheduler not in ("linear", "viggle_turbo", "qwen_turbo", "lightning", "qwen_lightning"):
             raise ValueError("Qwen-Image-2.1 editing supports linear, viggle_turbo, or qwen_turbo Euler sampling only.")
         Qwen21LoRA.validate_generation(
             args.lora_preset, args.steps, 1.0 if args.guidance is None else args.guidance, args.negative_prompt

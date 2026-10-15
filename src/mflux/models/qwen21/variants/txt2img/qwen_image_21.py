@@ -46,8 +46,8 @@ class QwenImage21(nn.Module):
             quantize=quantize,
             model_path=model_path,
             model_config=Qwen21LoRA.configure(model_config, lora_preset),
-            lora_paths=lora_paths,
-            lora_scales=lora_scales,
+            lora_paths=None,
+            lora_scales=None,
             bake_lora=bake_lora,
             compute_precision=compute_precision,
         )

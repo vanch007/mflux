@@ -93,3 +93,45 @@ class ViggleTurboScheduler(BaseScheduler):
 
 register_contrib(ViggleTurboScheduler, "viggle_turbo")
 register_contrib(ViggleTurboScheduler, "ViggleTurboScheduler")
+
+
+class QwenLightningScheduler(BaseScheduler):
+    """Official 4-step sampling schedule for Qwen-Image-2.1-Lightning."""
+    SIGMA_NODES = (1.0, 0.75, 0.5, 0.25)
+
+    def __init__(self, config):
+        self.config = config
+        steps = config.num_inference_steps
+        if steps != 4:
+            raise ValueError(
+                f"lightning supports the official 4-step schedule, got {steps}. "
+                "Use --steps 4 for Qwen-Image-2.1-Lightning."
+            )
+        self._sigmas = LinearScheduler.shift_sigmas(
+            mx.array(self.SIGMA_NODES, dtype=mx.float32), config, use_terminal=False
+        )
+        self._timesteps = mx.arange(steps, dtype=mx.float32)
+
+    @staticmethod
+    def check_args(parser, args) -> None:
+        if args.scheduler not in ("lightning", "qwen_lightning"):
+            return
+        if args.steps != 4:
+            parser.error("--scheduler lightning requires --steps 4.")
+
+    @property
+    def sigmas(self) -> mx.array:
+        return self._sigmas
+
+    @property
+    def timesteps(self) -> mx.array:
+        return self._timesteps
+
+    def step(self, noise: mx.array, timestep: int, latents: mx.array, **kwargs) -> mx.array:
+        dt = self._sigmas[timestep + 1] - self._sigmas[timestep]
+        return (latents.astype(mx.float32) + noise.astype(mx.float32) * dt).astype(latents.dtype)
+
+
+register_contrib(QwenLightningScheduler, "lightning")
+register_contrib(QwenLightningScheduler, "qwen_lightning")
+register_contrib(QwenLightningScheduler, "QwenLightningScheduler")
