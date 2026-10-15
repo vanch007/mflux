@@ -12,15 +12,7 @@ from mflux.utils.prompt_util import PromptUtil
 
 DEFAULT_MODEL = "qwen-image-2.1"
 # Same architecture as the default model. The Turbo checkpoint brings its own schedule.
-FAMILY_MODELS = (
-    "qwen-image-2.1-turbo",
-    "qwen-image-2.1-heretic-8bit",
-    "qwen-image-2.1-heretic-4bit",
-    "qwen-image-2.1-heretic-bf16",
-    "qwen-image-2.1-heretic-hdr-bf16",
-    "qwen-image-2.1-noctq-hdr-bf16",
-    "qwen-image-2.1-turbo-heretic-bf16",
-)
+FAMILY_MODELS = ("qwen-image-2.1-turbo",)
 IGNORED_OPTIONS = {"--lora-style": "Named LoRA styles are only supported by the Flux in-context CLI; use --lora."}
 
 

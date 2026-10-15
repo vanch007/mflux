@@ -69,19 +69,23 @@ class QwenImage21(nn.Module):
         step_cache_ratio: float | None = None,
         teacache_ratio: float | None = None,
     ) -> GeneratedImage:
+        preset = getattr(self, "lora_preset", None)
         if num_inference_steps is None:
-            num_inference_steps = Qwen21LoRA.PRESET_DEFAULT_STEPS[self.lora_preset] if self.lora_preset else 40
-        Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
-        scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
-        if self.lora_preset and image_path is not None:
+            num_inference_steps = (
+                Qwen21LoRA.PRESET_DEFAULT_STEPS[preset]
+                if preset
+                else Qwen21TurboScheduler.default_steps(self.model_config)
+            )
+        scheduler = scheduler or "linear"
+        scheduler = Qwen21LoRA.resolve_scheduler(preset, scheduler)
+        Qwen21TurboScheduler.check_generate(self.model_config, num_inference_steps, guidance, scheduler)
+        Qwen21LoRA.validate_generation(preset, num_inference_steps, guidance, negative_prompt)
+        if preset and image_path is not None:
             raise ValueError("Use QwenImage21Edit for Turbo reference edits; img2img skips required steps.")
         if teacache_ratio is not None:
             if step_cache_ratio is not None and step_cache_ratio != teacache_ratio:
                 raise ValueError("Pass step_cache_ratio or its deprecated alias teacache_ratio, not both")
             step_cache_ratio = teacache_ratio
-        if num_inference_steps is None:
-            num_inference_steps = Qwen21TurboScheduler.default_steps(self.model_config)
-        Qwen21TurboScheduler.check_generate(self.model_config, num_inference_steps, guidance, scheduler)
         config = Config(
             width=width,
             height=height,

@@ -90,21 +90,23 @@ class QwenImage21Edit(nn.Module):
         verify: bool = False,
         verify_retries: int = 0,
     ) -> GeneratedImage:
+        preset = getattr(self, "lora_preset", None)
         if num_inference_steps is None:
             num_inference_steps = (
-                Qwen21LoRA.PRESET_DEFAULT_STEPS[self.lora_preset]
-                if self.lora_preset
+                Qwen21LoRA.PRESET_DEFAULT_STEPS[preset]
+                if preset
                 else Qwen21TurboScheduler.default_steps(self.model_config)
             )
-        Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
-        scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
+        scheduler = scheduler or "linear"
+        scheduler = Qwen21LoRA.resolve_scheduler(preset, scheduler)
+        Qwen21TurboScheduler.check_generate(self.model_config, num_inference_steps, guidance, scheduler)
+        Qwen21LoRA.validate_generation(preset, num_inference_steps, guidance, negative_prompt)
         if scheduler not in EDIT_SCHEDULERS:
             raise ValueError(f"The Qwen-Image-2.1 edit supports {EDIT_SCHEDULERS}, got {scheduler!r}.")
-        if self.lora_preset and strength != 1.0:
+        if preset and strength != 1.0:
             raise ValueError("Acceleration presets require strength=1 to retain all trained steps.")
         image_paths = image_paths or []
         QwenImage21Edit._check_reference_count(image_paths)
-        Qwen21TurboScheduler.check_generate(self.model_config, num_inference_steps, guidance, scheduler)
         QwenImage21LatentCreator.validate_resolution(output_resolution)
         QwenImage21LatentCreator.validate_resolution(reference_resolution)
         if not 0 < strength <= 1:
