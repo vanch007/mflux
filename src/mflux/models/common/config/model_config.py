@@ -144,6 +144,11 @@ class ModelConfig:
 
     @staticmethod
     @lru_cache
+    def krea2_controlnet_depth() -> "ModelConfig":
+        return AVAILABLE_MODELS["krea-2-controlnet-depth"]
+
+    @staticmethod
+    @lru_cache
     def qwen_image() -> "ModelConfig":
         return AVAILABLE_MODELS["qwen-image"]
 
@@ -166,6 +171,16 @@ class ModelConfig:
     @lru_cache
     def qwen_image_21_controlnet_union() -> "ModelConfig":
         return AVAILABLE_MODELS["qwen-image-2.1-controlnet-union"]
+
+    @staticmethod
+    @lru_cache
+    def qwen_image_21_turbo() -> "ModelConfig":
+        return AVAILABLE_MODELS["qwen-image-2.1-turbo"]
+
+    @staticmethod
+    @lru_cache
+    def qwen_image_21_turbo_controlnet_union() -> "ModelConfig":
+        return AVAILABLE_MODELS["qwen-image-2.1-turbo-controlnet-union"]
 
     @staticmethod
     @lru_cache
@@ -289,6 +304,21 @@ AVAILABLE_MODELS = {
         model_name="krea/Krea-2-Raw",
         base_model=None,
         controlnet_model=None,
+        custom_transformer_model=None,
+        num_train_steps=None,
+        max_sequence_length=1024,
+        supports_guidance=True,
+        requires_sigma_shift=True,
+        sigma_max_shift=1.15,
+        sigma_max_seq_len=6400,
+    ),
+    "krea-2-controlnet-depth": ModelConfig(
+        # Krea 2 Turbo with Tanmay Patil's depth ControlNet merged into it at load.
+        priority=16,
+        aliases=["krea-2-controlnet-depth", "krea-2-controlnet", "krea2-controlnet"],
+        model_name="krea/Krea-2-Turbo",
+        base_model=None,
+        controlnet_model="Patil/Krea-2-depth-controlnet",
         custom_transformer_model=None,
         num_train_steps=None,
         max_sequence_length=1024,
@@ -772,6 +802,24 @@ AVAILABLE_MODELS = {
         lora_training_guidance=1.0,
         transformer_overrides={"rope_axes_dim": [32, 48, 48]},
     ),
+    "qwen-image-2.1-turbo-controlnet-union": ModelConfig(
+        # The Turbo checkpoint with the Fun ControlNet-Union branch beside it. alibaba-pai trained the
+        # branch with the base model. It runs on the Turbo schedule in 8 steps.
+        priority=34,
+        aliases=[
+            "qwen-image-2.1-turbo-controlnet-union",
+            "qwen-image-2.1-turbo-controlnet",
+            "qwen-2.1-turbo-controlnet",
+        ],
+        model_name="Qwen/Qwen-Image-2.1-Turbo",
+        base_model=None,
+        controlnet_model="alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union",
+        custom_transformer_model=None,
+        num_train_steps=None,
+        max_sequence_length=None,
+        supports_guidance=False,
+        requires_sigma_shift=False,
+    ),
     "seedvr2-7b": ModelConfig(
         priority=23,
         aliases=["seedvr2-7b", "seedvr2-7B"],
@@ -840,6 +888,21 @@ AVAILABLE_MODELS = {
         sigma_max_shift=0.9,
         sigma_max_seq_len=8192,
         sigma_shift_terminal=0.02,
+    ),
+    "qwen-image-2.1-turbo": ModelConfig(
+        # The distilled 8-step checkpoint of the base model, with the same architecture. It
+        # samples on the fixed sigma nodes in its model_index.json (see Qwen21TurboScheduler),
+        # not on a shifted linspace. It runs without CFG.
+        priority=32,
+        aliases=["qwen-image-2.1-turbo", "qwen-2.1-turbo", "qwen-image-21-turbo", "qwen-image-turbo-21"],
+        model_name="Qwen/Qwen-Image-2.1-Turbo",
+        base_model=None,
+        controlnet_model=None,
+        custom_transformer_model=None,
+        num_train_steps=None,
+        max_sequence_length=None,
+        supports_guidance=False,
+        requires_sigma_shift=False,
     ),
     "qwen-image-2.1-heretic-8bit": ModelConfig(
         priority=30,
@@ -930,7 +993,7 @@ AVAILABLE_MODELS = {
         sigma_max_shift=0.9,
         sigma_max_seq_len=8192,
         sigma_shift_terminal=0.02,
-    ),
+            ),
     "qwen-image-2.1-controlnet-union": ModelConfig(
         priority=31,
         aliases=["qwen-image-2.1-controlnet-union", "qwen-image-2.1-controlnet", "qwen-2.1-controlnet"],

@@ -21,7 +21,7 @@ from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
 from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 from mflux.models.qwen21.variants.controlnet.qwen_image_21_controlnet import QwenImage21Controlnet
 from mflux.models.qwen21.variants.edit.qwen_image_21_edit import QwenImage21Edit
-from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
+
 from mflux.models.seedvr2.variants.upscale.seedvr2 import SeedVR2
 from mflux.models.z_image import ZImage, ZImageTurbo, ZImageTurboControlnet
 from mflux.utils.exceptions import ModelConfigError
@@ -61,9 +61,13 @@ MODEL_CLASSES: dict[str, type] = {
     "krea-dev": Flux1,
     "ming-image-design": MingImage,
     "qwen-image": QwenImage,
-    "qwen-image-2.1": QwenImage21,
+    # One Qwen-Image-2.1 checkpoint does text-to-image and editing. QwenImage21Edit saves all of it
+    # (vision tower and lm_head too), and mflux-generate-qwen-2.1 also loads that save.
+    "qwen-image-2.1": QwenImage21Edit,
     "qwen-image-2.1-heretic-bf16": QwenImage21Edit,
     "qwen-image-2.1-controlnet-union": QwenImage21Controlnet,
+    "qwen-image-2.1-turbo": QwenImage21Edit,
+    "qwen-image-2.1-turbo-controlnet-union": QwenImage21Controlnet,
     "qwen-image-edit": QwenImageEdit,
     "qwen-image-edit-2511": QwenImageEdit,
     "schnell": Flux1,
@@ -80,6 +84,7 @@ MODEL_CLASSES: dict[str, type] = {
 # "not supported yet" from "someone added a model and forgot this table".
 UNSUPPORTED_MODELS = {
     "lens-turbo": "LensImage has no save_model(); its transformer is a single-file checkpoint",
+    "krea-2-controlnet-depth": "the depth ControlNet is added at load; save krea-2 instead and pass it to mflux-generate-krea2-controlnet with --base-model krea-2-controlnet-depth",
 }
 
 

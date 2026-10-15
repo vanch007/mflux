@@ -19,10 +19,10 @@ from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.ernie_image.cli import ernie_image_generate, ernie_image_turbo_generate
 from mflux.models.flux2.cli import flux2_edit_generate, flux2_generate
 from mflux.models.ideogram4.cli import ideogram4_generate
-from mflux.models.krea2.cli import krea2_generate
+from mflux.models.krea2.cli import krea2_controlnet_generate, krea2_generate
 from mflux.models.lens.cli import lens_generate
 from mflux.models.qwen.cli import qwen_image_edit_generate, qwen_image_generate
-from mflux.models.qwen21.cli import qwen21_controlnet_generate, qwen21_generate
+from mflux.models.qwen21.cli import qwen21_controlnet_generate, qwen21_edit_generate, qwen21_generate
 from mflux.models.z_image.cli import z_image_generate, z_image_turbo_generate
 from mflux.utils.exceptions import ModelConfigError
 
@@ -30,6 +30,13 @@ from mflux.utils.exceptions import ModelConfigError
 # extra_keys, extra argv its parser requires beyond --prompt).
 CLI_MODELS = [
     (krea2_generate, "krea-2", "dev", (), ()),
+    (
+        krea2_controlnet_generate,
+        "krea-2-controlnet-depth",
+        "krea-2",
+        (),
+        ("--depth-image-path", "depth.png"),
+    ),
     (z_image_turbo_generate, "z-image-turbo", "dev", (), ()),
     (ernie_image_generate, "ernie-image", "ernie-image-turbo", (), ()),
     (ernie_image_turbo_generate, "ernie-image-turbo", "ernie-image", (), ()),
@@ -45,8 +52,15 @@ CLI_MODELS = [
         flux2_edit_generate.FAMILY_MODELS,
         ("--image-paths", "ref.png"),
     ),
-    (qwen21_generate, "qwen-image-2.1", "dev", (), ()),
-    (qwen21_controlnet_generate, "qwen-image-2.1-controlnet-union", "z-image-controlnet", (), ()),
+    (qwen21_generate, "qwen-image-2.1", "dev", qwen21_generate.FAMILY_MODELS, ()),
+    (qwen21_edit_generate, "qwen-image-2.1", "dev", qwen21_edit_generate.FAMILY_MODELS, ()),
+    (
+        qwen21_controlnet_generate,
+        "qwen-image-2.1-controlnet-union",
+        "z-image-controlnet",
+        qwen21_controlnet_generate.FAMILY_MODELS,
+        (),
+    ),
     (qwen_image_generate, "qwen-image", "dev", (), ()),
     (qwen_image_edit_generate, "qwen-image-edit", "qwen-image", (), ("--image-paths", "ref.png")),
 ]
@@ -137,6 +151,16 @@ class TestRestrictedModelConfig:
         # the training base and must not be silently swapped for Turbo.
         with pytest.raises(ModelConfigError, match="only accepts the aliases"):
             self._resolve_via_parser(monkeypatch, krea2_generate, "krea-2", ["--model", "krea-2-raw"])
+
+    def test_qwen21_controlnet_cli_rejects_turbo(self, monkeypatch):
+        # alibaba-pai trained the ControlNet branch with the base model, not with the distilled Turbo.
+        with pytest.raises(ModelConfigError, match="only accepts the aliases"):
+            self._resolve_via_parser(
+                monkeypatch,
+                qwen21_controlnet_generate,
+                "qwen-image-2.1-controlnet-union",
+                ["--model", "qwen-image-2.1-turbo"],
+            )
 
     def test_z_image_controlnet_alias_rejected_despite_shared_repo_id(self, monkeypatch):
         # z-image-turbo and its ControlNet share model_name "Tongyi-MAI/Z-Image-Turbo";

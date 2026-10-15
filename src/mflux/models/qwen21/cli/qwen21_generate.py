@@ -3,6 +3,7 @@ from mflux.cli.parser.parsers import CommandLineParser, lora_init_kwargs_from_ar
 from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.qwen21.latent_creator.qwen21_latent_creator import Qwen21LatentCreator
+from mflux.models.qwen21.model.qwen21_scheduler import Qwen21TurboScheduler, ViggleTurboScheduler
 from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
 from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
 from mflux.utils.dimension_resolver import DimensionResolver
@@ -10,7 +11,17 @@ from mflux.utils.exceptions import PromptFileReadError, StopImageGenerationExcep
 from mflux.utils.prompt_util import PromptUtil
 
 DEFAULT_MODEL = "qwen-image-2.1"
-IGNORED_OPTIONS = {"--lora-style": "Named LoRA styles apply to Flux in-context only; use --lora."}
+# Same architecture as the default model. The Turbo checkpoint brings its own schedule.
+FAMILY_MODELS = (
+    "qwen-image-2.1-turbo",
+    "qwen-image-2.1-heretic-8bit",
+    "qwen-image-2.1-heretic-4bit",
+    "qwen-image-2.1-heretic-bf16",
+    "qwen-image-2.1-heretic-hdr-bf16",
+    "qwen-image-2.1-noctq-hdr-bf16",
+    "qwen-image-2.1-turbo-heretic-bf16",
+)
+IGNORED_OPTIONS = {"--lora-style": "Named LoRA styles are only supported by the Flux in-context CLI; use --lora."}
 
 
 def build_parser() -> CommandLineParser:
@@ -55,14 +66,9 @@ def main():
         DEFAULT_MODEL,
         model_path=args.model_path,
         base_model=args.base_model,
-        extra_keys=(
-            "qwen-image-2.1-heretic-8bit",
-            "qwen-image-2.1-heretic-4bit",
-            "qwen-image-2.1-heretic-bf16",
-            "qwen-image-2.1-heretic-hdr-bf16",
-            "qwen-image-2.1-noctq-hdr-bf16",
-        ),
+        extra_keys=FAMILY_MODELS,
     )
+    Qwen21TurboScheduler.check_args(parser, args, model_config)
 
     qwen = QwenImage21(
         quantize=args.quantize,

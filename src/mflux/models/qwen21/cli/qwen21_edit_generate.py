@@ -8,15 +8,29 @@ from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.resolution.config_resolution import ConfigResolution
 from mflux.models.qwen21.qwen21_lora import Qwen21LoRA
 from mflux.models.qwen21.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
-from mflux.models.qwen21.model.qwen21_scheduler import ViggleTurboScheduler, QwenTurboScheduler, QwenLightningScheduler
+from mflux.models.qwen21.model.qwen21_scheduler import (
+    Qwen21TurboScheduler,
+    QwenLightningScheduler,
+    QwenTurboScheduler,
+    ViggleTurboScheduler,
+)
 from mflux.models.qwen21.variants.edit.qwen_image_21_edit import EDIT_SCHEDULERS, MAX_REFERENCES, QwenImage21Edit
 from mflux.utils.dimension_resolver import DimensionResolver
 from mflux.utils.exceptions import ModelConfigError, PromptFileReadError, StopImageGenerationException
 from mflux.utils.prompt_util import PromptUtil
 from mflux.utils.scale_factor import ScaleFactor
 
-IGNORED_OPTIONS = {"--lora-style": "Named LoRA styles apply to Flux in-context only; use --lora."}
-
+# Same architecture as qwen-image-2.1. The Turbo checkpoint brings its own schedule.
+FAMILY_MODELS = (
+    "qwen-image-2.1-turbo",
+    "qwen-image-2.1-heretic-8bit",
+    "qwen-image-2.1-heretic-4bit",
+    "qwen-image-2.1-heretic-bf16",
+    "qwen-image-2.1-heretic-hdr-bf16",
+    "qwen-image-2.1-noctq-hdr-bf16",
+    "qwen-image-2.1-turbo-heretic-bf16",
+)
+IGNORED_OPTIONS = {"--lora-style": "Named LoRA styles are only supported by the Flux in-context CLI; use --lora."}
 CONDITIONAL_OPTIONS = {
     "--scheduler": {
         "condition": "linear for base, viggle_turbo with the Turbo preset",
@@ -184,8 +198,8 @@ def main() -> None:
         if not math.isfinite(guidance) or guidance < 1:
             raise ValueError("guidance must be finite and at least 1.")
         args.scheduler = Qwen21LoRA.resolve_scheduler(args.lora_preset, args.scheduler)
-        if args.scheduler not in ("linear", "viggle_turbo", "qwen_turbo", "lightning", "qwen_lightning"):
-            raise ValueError("Qwen-Image-2.1 editing supports linear, viggle_turbo, or qwen_turbo Euler sampling only.")
+        if args.scheduler not in ("linear", "viggle_turbo", "qwen_turbo", "qwen21_turbo", "lightning", "qwen_lightning"):
+            raise ValueError("Qwen-Image-2.1 editing supports linear, viggle_turbo, qwen_turbo, or lightning Euler sampling only.")
         Qwen21LoRA.validate_generation(
             args.lora_preset, args.steps, 1.0 if args.guidance is None else args.guidance, args.negative_prompt
         )
@@ -207,17 +221,12 @@ def main() -> None:
             args.model,
             "qwen-image-2.1",
             model_path=args.model_path,
+            extra_keys=FAMILY_MODELS,
             base_model=args.base_model,
-            extra_keys=(
-                "qwen-image-2.1-heretic-8bit",
-                "qwen-image-2.1-heretic-4bit",
-                "qwen-image-2.1-heretic-bf16",
-                "qwen-image-2.1-heretic-hdr-bf16",
-                "qwen-image-2.1-noctq-hdr-bf16",
-            ),
         )
     except (ModelConfigError, ValueError) as exc:
         parser.error(str(exc))
+    Qwen21TurboScheduler.check_args(parser, args, model_config)
     model = QwenImage21Edit(
         quantize=args.quantize,
         model_path=args.model_path,

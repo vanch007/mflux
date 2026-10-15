@@ -9,13 +9,13 @@ import numpy as np
 from mlx import nn
 from PIL import Image
 
-from mflux.cli.defaults.defaults import MODEL_INFERENCE_STEPS
 from mflux.models.common.config import ModelConfig
 from mflux.models.common.config.config import Config
 from mflux.models.common.step_cache.step_cache import StepCache as StepReuse
 from mflux.models.common.vae.vae_util import VAEUtil
 from mflux.models.common.weights.saving.model_saver import ModelSaver
 from mflux.models.qwen21.latent_creator.qwen_image21_latent_creator import QwenImage21LatentCreator
+from mflux.models.qwen21.model.qwen21_scheduler import Qwen21TurboScheduler
 from mflux.models.qwen21.model.qwen21_text_encoder.grounding import QwenImage21Grounding
 from mflux.models.qwen21.model.qwen21_text_encoder.prompt_encoder import QwenImage21PromptEncoder
 from mflux.models.qwen21.model.qwen21_transformer.qwen21_layout import QwenImage21Layout
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 MAX_REFERENCES = 10
 # The edit loop takes Euler steps over the scheduler's sigmas and never calls its step(), which is
 # the right update for these two only.
-EDIT_SCHEDULERS = ("linear", "viggle_turbo", "qwen_turbo", "lightning", "qwen_lightning")
+EDIT_SCHEDULERS = ("linear", "viggle_turbo", "qwen_turbo", "qwen21_turbo", "lightning", "qwen_lightning")
 
 
 class QwenImage21Edit(nn.Module):
@@ -94,18 +94,17 @@ class QwenImage21Edit(nn.Module):
             num_inference_steps = (
                 Qwen21LoRA.PRESET_DEFAULT_STEPS[self.lora_preset]
                 if self.lora_preset
-                else MODEL_INFERENCE_STEPS["qwen-image-2.1"]
+                else Qwen21TurboScheduler.default_steps(self.model_config)
             )
         Qwen21LoRA.validate_generation(self.lora_preset, num_inference_steps, guidance, negative_prompt)
         scheduler = Qwen21LoRA.resolve_scheduler(self.lora_preset, scheduler)
-        if scheduler not in ("linear", "viggle_turbo", "qwen_turbo", "lightning", "qwen_lightning"):
-            raise ValueError("Qwen-Image-2.1 editing supports linear, viggle_turbo, or qwen_turbo Euler sampling only.")
+        if scheduler not in EDIT_SCHEDULERS:
+            raise ValueError(f"The Qwen-Image-2.1 edit supports {EDIT_SCHEDULERS}, got {scheduler!r}.")
         if self.lora_preset and strength != 1.0:
             raise ValueError("Acceleration presets require strength=1 to retain all trained steps.")
         image_paths = image_paths or []
         QwenImage21Edit._check_reference_count(image_paths)
-        if scheduler not in EDIT_SCHEDULERS:
-            raise ValueError(f"The Qwen-Image-2.1 edit runs the linear or viggle_turbo schedule, got {scheduler!r}.")
+        Qwen21TurboScheduler.check_generate(self.model_config, num_inference_steps, guidance, scheduler)
         QwenImage21LatentCreator.validate_resolution(output_resolution)
         QwenImage21LatentCreator.validate_resolution(reference_resolution)
         if not 0 < strength <= 1:
@@ -134,7 +133,7 @@ class QwenImage21Edit(nn.Module):
             width=width,
             height=height,
             guidance=guidance,
-            scheduler=scheduler,
+            scheduler=Qwen21TurboScheduler.for_model(self.model_config, scheduler),
             # strength < 1 skips the first (1 - strength) of the schedule, starting from
             # the source noised to that sigma instead of pure noise
             image_path=QwenImage21Edit._recorded_path(image_paths[0]) if strength < 1 else None,
@@ -331,7 +330,13 @@ class QwenImage21Edit(nn.Module):
     def save_model(self, base_path: str) -> None:
         if getattr(self, "lora_paths", None):
             raise ValueError("Save the base model without LoRA, then reload its adapters separately.")
-        ModelSaver.save_model(self, self.bits, base_path, QwenImage21WeightDefinition)
+        ModelSaver.save_model(
+            self,
+            self.bits,
+            base_path,
+            QwenImage21WeightDefinition,
+            dtypes={"vae": getattr(self, "_vae_stored_dtype", None)},
+        )
         destination = Path(base_path)
         for name, config in self._component_configs.items():
             (destination / name / "config.json").write_text(json.dumps(config, indent=2))
