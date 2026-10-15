@@ -174,6 +174,7 @@ class Flux3WeightMapping(WeightMapping):
             WeightTarget(
                 to_pattern="embed_tokens.weight",
                 from_pattern=[
+                    "embed_tokens.weight",
                     "model.language_model.embed_tokens.weight",
                     "model.embed_tokens.weight",
                 ],
@@ -181,6 +182,7 @@ class Flux3WeightMapping(WeightMapping):
             WeightTarget(
                 to_pattern="norm.weight",
                 from_pattern=[
+                    "norm.weight",
                     "model.language_model.norm.weight",
                     "model.norm.weight",
                 ],
@@ -190,80 +192,47 @@ class Flux3WeightMapping(WeightMapping):
             targets.extend([
                 WeightTarget(
                     to_pattern=f"layers.{layer}.input_layernorm.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.input_layernorm.weight",
-                        f"model.layers.{layer}.input_layernorm.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.input_layernorm.weight", f"model.language_model.layers.{layer}.input_layernorm.weight", f"model.layers.{layer}.input_layernorm.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.post_attention_layernorm.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.post_attention_layernorm.weight",
-                        f"model.layers.{layer}.post_attention_layernorm.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.post_attention_layernorm.weight", f"model.language_model.layers.{layer}.post_attention_layernorm.weight", f"model.layers.{layer}.post_attention_layernorm.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.self_attn.q_proj.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.self_attn.q_proj.weight",
-                        f"model.layers.{layer}.self_attn.q_proj.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.self_attn.q_proj.weight", f"model.language_model.layers.{layer}.self_attn.q_proj.weight", f"model.layers.{layer}.self_attn.q_proj.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.self_attn.k_proj.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.self_attn.k_proj.weight",
-                        f"model.layers.{layer}.self_attn.k_proj.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.self_attn.k_proj.weight", f"model.language_model.layers.{layer}.self_attn.k_proj.weight", f"model.layers.{layer}.self_attn.k_proj.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.self_attn.v_proj.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.self_attn.v_proj.weight",
-                        f"model.layers.{layer}.self_attn.v_proj.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.self_attn.v_proj.weight", f"model.language_model.layers.{layer}.self_attn.v_proj.weight", f"model.layers.{layer}.self_attn.v_proj.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.self_attn.o_proj.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.self_attn.o_proj.weight",
-                        f"model.layers.{layer}.self_attn.o_proj.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.self_attn.o_proj.weight", f"model.language_model.layers.{layer}.self_attn.o_proj.weight", f"model.layers.{layer}.self_attn.o_proj.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.self_attn.q_norm.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.self_attn.q_norm.weight",
-                        f"model.layers.{layer}.self_attn.q_norm.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.self_attn.q_norm.weight", f"model.language_model.layers.{layer}.self_attn.q_norm.weight", f"model.layers.{layer}.self_attn.q_norm.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.self_attn.k_norm.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.self_attn.k_norm.weight",
-                        f"model.layers.{layer}.self_attn.k_norm.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.self_attn.k_norm.weight", f"model.language_model.layers.{layer}.self_attn.k_norm.weight", f"model.layers.{layer}.self_attn.k_norm.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.mlp.gate_proj.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.mlp.gate_proj.weight",
-                        f"model.layers.{layer}.mlp.gate_proj.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.mlp.gate_proj.weight", f"model.language_model.layers.{layer}.mlp.gate_proj.weight", f"model.layers.{layer}.mlp.gate_proj.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.mlp.up_proj.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.mlp.up_proj.weight",
-                        f"model.layers.{layer}.mlp.up_proj.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.mlp.up_proj.weight", f"model.language_model.layers.{layer}.mlp.up_proj.weight", f"model.layers.{layer}.mlp.up_proj.weight"],
                 ),
                 WeightTarget(
                     to_pattern=f"layers.{layer}.mlp.down_proj.weight",
-                    from_pattern=[
-                        f"model.language_model.layers.{layer}.mlp.down_proj.weight",
-                        f"model.layers.{layer}.mlp.down_proj.weight",
-                    ],
+                    from_pattern=[f"layers.{layer}.mlp.down_proj.weight", f"model.language_model.layers.{layer}.mlp.down_proj.weight", f"model.layers.{layer}.mlp.down_proj.weight"],
                 ),
             ])
         return targets
