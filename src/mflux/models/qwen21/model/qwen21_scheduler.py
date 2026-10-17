@@ -86,12 +86,12 @@ class Qwen21TurboScheduler(BaseScheduler):
 
     @staticmethod
     def check_generate(model_config, num_inference_steps: int, guidance: float, scheduler: str = "linear") -> None:
-        if not Qwen21TurboScheduler.is_turbo(model_config):
+        if model_config is not None and not Qwen21TurboScheduler.is_turbo(model_config):
             return
         if guidance != 1:
             raise ValueError(f"Qwen-Image-2.1-Turbo runs without CFG. Got guidance={guidance}. Use guidance=1.")
-        if scheduler != "linear":
-            raise ValueError(f"Qwen-Image-2.1-Turbo runs its own schedule. Got scheduler={scheduler!r}. Use 'linear'.")
+        if scheduler not in ("linear", "qwen_turbo", "qwen21_turbo", "lightning", "qwen_lightning"):
+            raise ValueError(f"Qwen-Image-2.1-Turbo runs its own schedule. Got scheduler={scheduler!r}. Use 'qwen_turbo' or 'linear'.")
 
     @staticmethod
     def default_steps(model_config) -> int:
@@ -108,8 +108,8 @@ class Qwen21TurboScheduler(BaseScheduler):
         return scheduler
 
     @staticmethod
-    def check_args(parser, args, model_config) -> None:
-        if not Qwen21TurboScheduler.is_turbo(model_config):
+    def check_args(parser, args, model_config=None) -> None:
+        if model_config is not None and not Qwen21TurboScheduler.is_turbo(model_config):
             return
         nodes = len(Qwen21TurboScheduler.SIGMA_NODES)
         if args.steps != nodes and not parser._option_was_provided("--steps"):
